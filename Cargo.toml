@@ -29,9 +29,6 @@ winit = "0.30"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Audio resampling — converts between sample rates
-rubato = "0.16"
-
 # Structured logging — modern replacement for println! debugging
 tracing = "0.1"
 tracing-subscriber = "0.3"
