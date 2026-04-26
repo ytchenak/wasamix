@@ -93,6 +93,25 @@ pub fn find_vbcable(devices: &[DeviceInfo]) -> Option<&DeviceInfo> {
     })
 }
 
+/// Filter to render (output) devices. Useful for the "system audio source"
+/// and "output destination" selectors — both operate on render devices,
+/// just in different ways (loopback capture vs. normal render).
+pub fn filter_render_devices(devices: &[DeviceInfo]) -> Vec<DeviceInfo> {
+    devices
+        .iter()
+        .filter(|d| d.direction == DeviceDirection::Render && !d.name.contains("[Loopback]"))
+        .cloned()
+        .collect()
+}
+
+/// ID of the current Windows-default render device. Used to tag the
+/// corresponding entry in the system-source selector with "(Windows default)".
+pub fn get_default_render_device_id_opt() -> Option<String> {
+    initialize_mta().ok().ok()?;
+    let device = wasapi::get_default_device(&Direction::Render).ok()?;
+    device.get_id().ok()
+}
+
 /// Filter to only real microphones — excludes VB-Cable endpoints and loopback devices.
 ///
 /// RUST CONCEPT: Closures and `.filter()`
@@ -128,16 +147,6 @@ pub fn get_default_render_device_id() -> Result<String> {
     let name = device.get_friendlyname().unwrap_or_default();
     info!("Default render device: {} ({})", name, id);
     Ok(id)
-}
-
-/// Friendly name of the default render device — shown in the tray menu so
-/// users can tell which speakers/headphones wasamix is capturing system
-/// audio from. Returns `None` if the device has no friendly name or we
-/// can't reach the enumerator.
-pub fn get_default_render_device_name() -> Option<String> {
-    initialize_mta().ok().ok()?;
-    let device = wasapi::get_default_device(&Direction::Render).ok()?;
-    device.get_friendlyname().ok()
 }
 
 #[cfg(test)]

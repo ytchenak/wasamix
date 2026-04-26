@@ -1,6 +1,6 @@
 [package]
 name = "wasamix"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 authors = ["Yakov Tchenak"]
 description = "Windows system-tray mixer that blends microphone + system loopback audio into VB-Audio Virtual Cable."

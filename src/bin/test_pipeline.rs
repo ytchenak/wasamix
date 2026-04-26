@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Mic: {} ({})", mic.name, mic.id);
 
     println!("\nStarting pipeline...");
-    let mut pipeline = Pipeline::start(&mic.id, &vbcable.id)?;
+    let mut pipeline = Pipeline::start(&mic.id, None, &vbcable.id)?;
     println!("Pipeline started! Mixing for 5 seconds...\n");
 
     thread::sleep(Duration::from_secs(5));

@@ -55,19 +55,45 @@ cargo build --release
 
 ### What the tray menu is for
 
-The right-click menu only picks **your microphone**. The **system-audio source** (whichever speakers / headphones Windows is currently playing through) is captured automatically via WASAPI loopback — to change it, swap the Windows default playback device from the volume-mixer tray popup, not from wasamix. The menu shows the current default as a read-only hint:
+The right-click menu has three independent selectors — one per audio slot. All three are disabled while mixing; stop, switch, start.
 
 ```
 🎙  Input microphone:
   ● Microphone (HD Pro Webcam C920)
   ○ Headset (Jabra Evolve2 65)
-  ──────────────
-  🔊 System sound: Speakers (Realtek) (Windows default)
-  ──────────────
+  ─────────────
+🔊 System audio source:
+  ● (Windows default — Speakers (Realtek))
+  ○ Speakers (Realtek)
+  ○ Headset (Jabra Evolve2 65)
+  ○ Digital Output
+  ─────────────
+📤 Output destination:
+  ○ Speakers (Realtek)
+  ● CABLE Input (VB-Audio Virtual Cable)  ← recording target
+  ○ CABLE-B Input
+  ─────────────
   Quit
 ```
 
-So picking "Headset (Jabra Evolve2 65)" captures the Jabra's *mic* and mixes it with whatever Windows is currently playing out — it does **not** route anything else.
+- **Input microphone** — whose voice gets captured.
+- **System audio source** — which render device is loopback-captured. `(Windows default)` follows whatever Windows is routing right now; pinning a specific device ignores Windows default changes.
+- **Output destination** — where the mix is written. Usually VB-Cable; pick something else to route into OBS Virtual Audio, a second cable, or a real speaker for debugging.
+
+Selecting a device **does not** start mixing — left-click the tray icon when you're ready.
+
+#### Avoiding feedback loops
+
+If you ever set **system-audio source == output destination**, the output would be re-captured as input on the next tick → infinite howl. wasamix refuses the combination — both when you try to pick it in the menu and again at start-time — so you can't accidentally melt your speakers.
+
+#### Example configurations
+
+| Goal                                                     | Mic   | System source  | Output     |
+|----------------------------------------------------------|-------|----------------|------------|
+| Record a meeting with your voice + what you're hearing   | USB mic | (Windows default) | CABLE Input |
+| Game-audio capture while music plays elsewhere           | USB mic | Headset       | CABLE Input |
+| Multi-stream (two recorders at once)                     | USB mic | Speakers      | CABLE-B Input |
+| Dry-run without VB-Cable (listen to the mix yourself)    | USB mic | Headset       | Speakers    |
 
 ### Reading the tray icon
 
