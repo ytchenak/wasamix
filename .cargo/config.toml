@@ -1,0 +1,4 @@
+# Ensure Rust finds the MSVC linker instead of Git's link.exe (Unix symlink utility).
+# Without this, Git's usr/bin/link.exe shadows the real MSVC linker in PATH.
+[target.x86_64-pc-windows-msvc]
+linker = "C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Tools\\MSVC\\14.50.35717\\bin\\Hostx64\\x64\\link.exe"
