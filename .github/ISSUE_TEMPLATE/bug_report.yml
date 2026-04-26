@@ -1,0 +1,85 @@
+name: Bug report
+description: Something isn't working as expected.
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. A reproducible report is worth ten guesses.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, what did you see?
+      placeholder: I clicked the tray icon and ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Launch wasamix.exe
+        2. Right-click → select "USB Mic"
+        3. Left-click
+        4. ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: wasamix version
+      description: From the `.exe` filename, or `cargo pkgid` if building from source. Include commit hash if built from main.
+      placeholder: "0.1.0 (or commit abcdef1)"
+    validations:
+      required: true
+
+  - type: input
+    id: windows-version
+    attributes:
+      label: Windows version
+      placeholder: "Windows 11 23H2 (build 22631.xxxx)"
+    validations:
+      required: true
+
+  - type: input
+    id: vb-cable-version
+    attributes:
+      label: VB-Audio Virtual Cable version
+      placeholder: "e.g. 1.0.9.1"
+
+  - type: textarea
+    id: mic-details
+    attributes:
+      label: Microphone / audio device details
+      description: Make and model of the mic, whether it's USB / Bluetooth / built-in, native sample rate if you know it.
+      placeholder: "Jabra Evolve2 65 (Bluetooth, HSP at 16 kHz)"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Run from a terminal to capture tracing output:
+
+        ```
+        $env:RUST_LOG = "info"
+        .\wasamix.exe
+        ```
+
+        Paste the output here (redact anything sensitive).
+      render: text
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I've searched existing issues and this isn't a duplicate.
+          required: true
+        - label: I've confirmed VB-Audio Virtual Cable is installed and working.
+          required: true

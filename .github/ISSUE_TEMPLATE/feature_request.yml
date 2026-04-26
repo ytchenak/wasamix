@@ -1,0 +1,41 @@
+name: Feature request
+description: Suggest an improvement. Please read the scope section first.
+title: "feat: "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        wasamix is deliberately small: one tray icon, mic+loopback → VB-Cable. Features that enlarge the scope (cross-platform, multi-output, plugins, GUI windows) are likely to be declined. Open the issue anyway if you want to discuss — just know the bar is high.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the use case, not the solution. "I want to record X while Y" is more useful than "add a Z button".
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: What would the feature look like from the user's perspective?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Existing workarounds, other tools, config changes you've tried.
+
+  - type: checkboxes
+    id: scope-check
+    attributes:
+      label: Scope check
+      options:
+        - label: This does not require cross-platform support (macOS/Linux are out of scope).
+          required: true
+        - label: I've searched existing issues and discussions.
+          required: true

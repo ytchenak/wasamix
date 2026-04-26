@@ -1,0 +1,26 @@
+# Rust build output
+/target
+
+# Runtime config written next to the exe
+config.json
+
+# Editor / IDE
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+
+# OS cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Crash dumps
+*.pdb.dump
+*.core
+
+# Local env / secrets (shouldn't exist, but just in case)
+.env
+.env.*
