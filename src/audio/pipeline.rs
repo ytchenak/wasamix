@@ -10,7 +10,7 @@
 //! `Pipeline::stop()` is called (or Pipeline is dropped), it signals all
 //! threads to stop and waits for them to finish. No resource leaks!
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -18,7 +18,7 @@ use anyhow::Result;
 use tracing::info;
 
 use super::capture::{start_capture_thread, start_render_thread};
-use super::mixer::{BYTES_PER_SAMPLE, SAMPLE_RATE, mix_samples, new_shared_buffer};
+use super::mixer::{BYTES_PER_SAMPLE, SAMPLE_RATE, mix_samples, new_shared_buffer, peak_i16};
 
 /// Buffer 2 seconds of audio
 const BUFFER_CAPACITY: usize = SAMPLE_RATE as usize * BYTES_PER_SAMPLE * 2;
@@ -31,6 +31,11 @@ const BUFFER_CAPACITY: usize = SAMPLE_RATE as usize * BYTES_PER_SAMPLE * 2;
 /// We start with `None` and fill them in `start()`.
 pub struct Pipeline {
     stop_flag: Arc<AtomicBool>,
+    /// Peak absolute amplitude of the most recent mixed buffer, in 0..=32768.
+    /// Written by the mixer closure on the render thread, read by the tray
+    /// thread for the level meter. `AtomicU32` (not `AtomicU16`) because
+    /// u16 atomics aren't guaranteed on all Rust targets.
+    peak_level: Arc<AtomicU32>,
     mic_thread: Option<thread::JoinHandle<()>>,
     loopback_thread: Option<thread::JoinHandle<()>>,
     render_thread: Option<thread::JoinHandle<()>>,
@@ -45,6 +50,7 @@ impl Pipeline {
     /// It's from the `anyhow` crate — a convenient way to return errors.
     pub fn start(mic_device_id: &str, vbcable_device_id: &str) -> Result<Self> {
         let stop_flag = Arc::new(AtomicBool::new(false));
+        let peak_level = Arc::new(AtomicU32::new(0));
 
         // Create shared ring buffers for mic and loopback audio
         let mic_buffer = new_shared_buffer(BUFFER_CAPACITY);
@@ -74,11 +80,14 @@ impl Pipeline {
         // ring buffer and mix them.
         let mic_buf_for_mixer = Arc::clone(&mic_buffer);
         let loop_buf_for_mixer = Arc::clone(&loopback_buffer);
+        let peak_for_mixer = Arc::clone(&peak_level);
         let mixer_fn: Arc<Mutex<dyn FnMut(usize) -> Vec<u8> + Send>> =
             Arc::new(Mutex::new(move |bytes_needed: usize| {
                 let mic_data = mic_buf_for_mixer.lock().unwrap().read(bytes_needed);
                 let loop_data = loop_buf_for_mixer.lock().unwrap().read(bytes_needed);
-                mix_samples(&mic_data, &loop_data)
+                let mixed = mix_samples(&mic_data, &loop_data);
+                peak_for_mixer.store(peak_i16(&mixed) as u32, Ordering::Relaxed);
+                mixed
             }));
 
         // Start render thread — writes mixed audio to VB-Cable
@@ -95,10 +104,20 @@ impl Pipeline {
 
         Ok(Pipeline {
             stop_flag,
+            peak_level,
             mic_thread: Some(mic_thread),
             loopback_thread: Some(loopback_thread),
             render_thread: Some(render_thread),
         })
+    }
+
+    /// Current peak output level, in 0..=32768.
+    ///
+    /// Read by the tray thread on its UI timer. Cheap (single atomic load).
+    pub fn peak_level(&self) -> u16 {
+        // Clamp back to u16: the mixer closure only writes 0..=32768, so this
+        // is a pure type narrowing.
+        self.peak_level.load(Ordering::Relaxed).min(u16::MAX as u32) as u16
     }
 
     /// Stop the pipeline — signals all threads and waits for them.

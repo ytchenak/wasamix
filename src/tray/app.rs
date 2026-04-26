@@ -25,6 +25,8 @@
 //! the mouse button, while `TrayIconEvent::Enter { .. }` carries position info.
 //! Pattern matching with `match` is the idiomatic way to handle each variant.
 
+use std::time::{Duration, Instant};
+
 use anyhow::{Context, Result};
 use tracing::{error, info, warn};
 
@@ -44,6 +46,64 @@ use crate::config::Config;
 // Icon dimensions — 64x64 RGBA (4 bytes per pixel)
 // --------------------------------------------------------------------------
 const ICON_SIZE: u32 = 64;
+
+/// How often the tray thread polls the output-level meter and repaints.
+/// ~6 Hz keeps Shell_NotifyIconW happy (Explorer rate-limits faster updates)
+/// and gives the human eye enough feedback to see "it's alive".
+const TICK_INTERVAL: Duration = Duration::from_millis(166);
+
+/// Coarse output-level buckets. A tray icon is ~16x16 on screen — color is
+/// the only thing readable at that size, so we don't animate shape, just hue.
+///
+/// Thresholds are expressed as i16 peak amplitudes. `Clip` fires at roughly
+/// −0.3 dB FS (33100 / 32768).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum LevelBucket {
+    Idle,   // pipeline not running
+    Silent, // running, peak < −40 dB
+    Low,    // −40 .. −20 dB
+    Mid,    // −20 .. −3 dB
+    Clip,   // ≥ −3 dB
+}
+
+impl LevelBucket {
+    /// Map a peak amplitude (0..=32768) to a bucket. Callers pass `None`
+    /// when the pipeline is stopped.
+    fn from_peak(peak: Option<u16>) -> Self {
+        let Some(p) = peak else {
+            return LevelBucket::Idle;
+        };
+        // Thresholds chosen for useful visual feedback:
+        //   0.01 * 32768 ≈ 328   (−40 dB)
+        //   0.1  * 32768 ≈ 3277  (−20 dB)
+        //   0.7  * 32768 ≈ 22938 (−3 dB)
+        match p {
+            0..=327 => LevelBucket::Silent,
+            328..=3276 => LevelBucket::Low,
+            3277..=22937 => LevelBucket::Mid,
+            _ => LevelBucket::Clip,
+        }
+    }
+
+    fn color(self) -> (u8, u8, u8) {
+        match self {
+            LevelBucket::Idle => (128, 128, 128), // grey
+            LevelBucket::Silent => (30, 90, 30),  // dim green
+            LevelBucket::Low => (0, 200, 0),      // green
+            LevelBucket::Mid => (230, 190, 0),    // amber
+            LevelBucket::Clip => (220, 40, 40),   // red
+        }
+    }
+}
+
+/// Human-readable dB estimate for the tooltip. Returns `-inf` for silence
+/// rather than doing ugly log(0) arithmetic.
+fn peak_to_dbfs(peak: u16) -> f32 {
+    if peak == 0 {
+        return f32::NEG_INFINITY;
+    }
+    20.0 * (peak as f32 / 32768.0).log10()
+}
 
 /// System tray application — owns the tray icon, context menu, audio pipeline,
 /// and configuration state.
@@ -96,6 +156,14 @@ pub struct TrayApp {
 
     /// The "Quit" menu item — stored so we can identify its ID in event handling.
     quit_item_id: Option<MenuId>,
+
+    /// Last bucket we pushed to the tray icon. Used to skip redundant
+    /// `set_icon`/`set_tooltip` calls (Explorer hates frequent updates).
+    current_bucket: LevelBucket,
+
+    /// Next time we should poll the peak level atomic and potentially update
+    /// the icon. Using `Instant` (monotonic clock) avoids wall-clock jumps.
+    next_tick: Instant,
 }
 
 impl TrayApp {
@@ -152,20 +220,21 @@ impl TrayApp {
             mic_menu_ids: Vec::new(),
             mic_menu_items: Vec::new(),
             quit_item_id: None,
+            current_bucket: LevelBucket::Idle,
+            next_tick: Instant::now(),
         })
     }
 
     /// Build (or rebuild) the right-click context menu.
     ///
-    /// The menu has:
-    ///   - A CheckMenuItem for each microphone (radio-button style: exactly one checked)
-    ///   - A separator
-    ///   - A "Quit" item
-    ///
-    /// RUST CONCEPT: Mutable borrowing (`&mut self`)
-    /// This method takes `&mut self` because it modifies `self.mic_menu_ids`,
-    /// `self.mic_menu_items`, and `self.quit_item_id`. Rust's borrow checker
-    /// ensures no one else is reading these fields while we mutate them.
+    /// Layout:
+    ///   🎙  Input microphone:              (disabled header)
+    ///     • Microphone (HD Pro Webcam C920)   (CheckMenuItem — radio)
+    ///     • Headset (Jabra Evolve2 65)        (CheckMenuItem — radio)
+    ///   ──────────────────
+    ///   🔊 System sound: Speakers (...)    (disabled — Windows-default hint)
+    ///   ──────────────────
+    ///   Quit
     fn build_menu(&mut self) -> Result<Menu> {
         let menu = Menu::new();
         let is_mixing = self.pipeline.is_some();
@@ -173,6 +242,13 @@ impl TrayApp {
         // Clear old mappings
         self.mic_menu_ids.clear();
         self.mic_menu_items.clear();
+
+        // Section header — disabled MenuItem, acts as a label.
+        // Note: many Windows theme engines render disabled items in grey,
+        // which is what we want — it reads as a heading, not a clickable row.
+        let mic_header = MenuItem::new("\u{1F399}  Input microphone:", false, None);
+        menu.append(&mic_header)
+            .context("Failed to append mic header")?;
 
         // Add a CheckMenuItem for each microphone
         for device in &self.input_devices {
@@ -204,14 +280,23 @@ impl TrayApp {
                 .context("Failed to append placeholder item")?;
         }
 
-        // Separator between mic list and Quit
-        //
-        // RUST CONCEPT: `PredefinedMenuItem` — factory methods
-        // `PredefinedMenuItem::separator()` is a "factory method" — a function
-        // that creates a specific variant without exposing the internal construction.
-        let separator = PredefinedMenuItem::separator();
-        menu.append(&separator)
+        // Separator between the mic list and the system-sound info row.
+        menu.append(&PredefinedMenuItem::separator())
             .context("Failed to append separator")?;
+
+        // Informational row: which render device we're capturing system audio
+        // from. It's disabled because the user can't change it here — they
+        // change it from the Windows volume-mixer tray popup.
+        let sys_name =
+            devices::get_default_render_device_name().unwrap_or_else(|| "(unknown)".to_string());
+        let sys_label = format!("\u{1F50A} System sound: {} (Windows default)", sys_name);
+        let sys_item = MenuItem::new(&sys_label, false, None);
+        menu.append(&sys_item)
+            .context("Failed to append system-sound row")?;
+
+        // Separator before Quit.
+        menu.append(&PredefinedMenuItem::separator())
+            .context("Failed to append separator before Quit")?;
 
         // Quit item
         let quit_item = MenuItem::new("Quit", true, None);
@@ -222,22 +307,8 @@ impl TrayApp {
         Ok(menu)
     }
 
-    /// Create a 64x64 RGBA icon — a filled circle.
-    ///
-    /// - Grey (128,128,128) when idle
-    /// - Green (0,200,0) when active/mixing
-    ///
-    /// RUST CONCEPT: Pure function (no `&self`)
-    /// This is an "associated function" (like a static method in Python).
-    /// It doesn't need `self` because the icon is computed solely from
-    /// the `active` parameter.
-    fn create_icon(active: bool) -> Icon {
-        let (r, g, b): (u8, u8, u8) = if active {
-            (0, 200, 0) // green = mixing
-        } else {
-            (128, 128, 128) // grey = idle
-        };
-
+    /// Create a 64x64 RGBA filled-circle icon in the given RGB color.
+    fn create_icon_rgb(r: u8, g: u8, b: u8) -> Icon {
         // Allocate RGBA buffer: 64 * 64 * 4 bytes
         let mut rgba = vec![0u8; (ICON_SIZE * ICON_SIZE * 4) as usize];
 
@@ -272,6 +343,11 @@ impl TrayApp {
         // We know our data is correct, so `.expect()` is safe here.
         Icon::from_rgba(rgba, ICON_SIZE, ICON_SIZE)
             .expect("Icon RGBA data should be valid (64x64x4 bytes)")
+    }
+
+    fn icon_for(bucket: LevelBucket) -> Icon {
+        let (r, g, b) = bucket.color();
+        Self::create_icon_rgb(r, g, b)
     }
 
     /// Toggle mixing on/off — called on left-click.
@@ -309,6 +385,10 @@ impl TrayApp {
         match Pipeline::start(&mic_id, &vbcable_id) {
             Ok(pipeline) => {
                 self.pipeline = Some(pipeline);
+                // Force the next update_icon() tick to repaint: we're
+                // transitioning out of Idle, and the new bucket depends on
+                // live peak data we haven't read yet.
+                self.current_bucket = LevelBucket::Idle;
                 self.update_icon();
                 self.rebuild_menu();
                 info!("Mixing started");
@@ -334,24 +414,53 @@ impl TrayApp {
         self.rebuild_menu();
     }
 
-    /// Update the tray icon to reflect current state (idle vs mixing).
-    fn update_icon(&self) {
-        let active = self.pipeline.is_some();
-        let icon = Self::create_icon(active);
+    /// Poll the current peak level and update the tray icon + tooltip.
+    ///
+    /// Called from `about_to_wait` on the UI timer. We only hit
+    /// `set_icon`/`set_tooltip` when the bucket actually changes, so the
+    /// shell doesn't see more than ~1 update per noticeable level shift.
+    fn update_icon(&mut self) {
+        // Decide which bucket applies right now.
+        let bucket = if self.pipeline.is_some() {
+            if self.config.show_level_meter {
+                let peak = self.pipeline.as_ref().map(|p| p.peak_level());
+                LevelBucket::from_peak(peak)
+            } else {
+                // Meter disabled: behave like pre-meter wasamix — solid green
+                // whenever mixing is running.
+                LevelBucket::Low
+            }
+        } else {
+            LevelBucket::Idle
+        };
 
-        if let Some(tray) = &self.tray_icon {
+        let Some(tray) = &self.tray_icon else { return };
+
+        // Only re-push the icon when the bucket changes. Explorer will drop
+        // / coalesce updates otherwise, causing flicker on some themes.
+        if bucket != self.current_bucket {
+            let icon = Self::icon_for(bucket);
             if let Err(e) = tray.set_icon(Some(icon)) {
                 error!("Failed to update tray icon: {:?}", e);
             }
-
-            // Update tooltip to show current state
-            let tooltip = if active {
-                "wasamix — MIXING"
-            } else {
-                "wasamix — idle (click to start)"
-            };
-            let _ = tray.set_tooltip(Some(tooltip));
+            self.current_bucket = bucket;
         }
+
+        // Tooltip is cheap to recompute and users see the dB value update
+        // as they hover — so we refresh it every tick while mixing.
+        let tooltip = match (bucket, self.pipeline.as_ref()) {
+            (LevelBucket::Idle, _) => "wasamix — idle (click to start)".to_string(),
+            (_, Some(pipeline)) if self.config.show_level_meter => {
+                let db = peak_to_dbfs(pipeline.peak_level());
+                if db.is_finite() {
+                    format!("wasamix — MIXING ({:.0} dBFS)", db)
+                } else {
+                    "wasamix — MIXING (silent)".to_string()
+                }
+            }
+            _ => "wasamix — MIXING".to_string(),
+        };
+        let _ = tray.set_tooltip(Some(&tooltip));
     }
 
     /// Rebuild the menu and update the tray icon's menu reference.
@@ -467,19 +576,19 @@ impl TrayApp {
         // We use `?` to propagate the error.
         let event_loop = EventLoop::new().context("Failed to create event loop")?;
 
-        // Use Poll control flow so `about_to_wait` is called repeatedly.
-        // This lets us poll for tray/menu events on each iteration.
-        //
-        // Note: In a real app you might prefer WaitUntil with a timer to save
-        // CPU. For simplicity, we use Poll which keeps the loop spinning.
-        event_loop.set_control_flow(ControlFlow::Poll);
+        // Initial control flow — overridden each tick by about_to_wait with
+        // a concrete WaitUntil so we wake up on a 6 Hz cadence for the level
+        // meter and event polling. This is gentler on the CPU than Poll and
+        // still responsive enough for tray UX.
+        self.next_tick = Instant::now() + TICK_INTERVAL;
+        event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_tick));
 
         // Build the context menu
         let menu = self.build_menu().context("Failed to build context menu")?;
         self.menu = Some(menu.clone());
 
         // Create the tray icon
-        let icon = Self::create_icon(false); // start in idle state
+        let icon = Self::icon_for(LevelBucket::Idle);
         let tray_icon = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
             .with_tooltip("wasamix — idle (click to start)")
@@ -548,11 +657,18 @@ impl ApplicationHandler for TrayApp {
             self.handle_menu_event(event);
         }
 
+        // Level-meter tick: if the deadline has passed, refresh the icon +
+        // tooltip from the pipeline's peak level, then schedule the next
+        // wake-up. Using WaitUntil (not Poll) means the thread actually
+        // sleeps between ticks — negligible CPU when idle.
+        let now = Instant::now();
+        if now >= self.next_tick {
+            self.update_icon();
+            self.next_tick = now + TICK_INTERVAL;
+        }
+        event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_tick));
+
         // If the tray icon was dropped (user quit), exit the event loop.
-        //
-        // RUST CONCEPT: `is_none()` on Option
-        // This is a simple boolean check — the idiomatic way to test
-        // whether an Option holds a value.
         if self.tray_icon.is_none() {
             event_loop.exit();
         }

@@ -53,6 +53,36 @@ cargo build --release
 4. In your recording app (Otter, OBS, etc.), set the input device to **`CABLE Output (VB-Audio Virtual Cable)`**.
 5. **Left-click** again to stop.
 
+### What the tray menu is for
+
+The right-click menu only picks **your microphone**. The **system-audio source** (whichever speakers / headphones Windows is currently playing through) is captured automatically via WASAPI loopback — to change it, swap the Windows default playback device from the volume-mixer tray popup, not from wasamix. The menu shows the current default as a read-only hint:
+
+```
+🎙  Input microphone:
+  ● Microphone (HD Pro Webcam C920)
+  ○ Headset (Jabra Evolve2 65)
+  ──────────────
+  🔊 System sound: Speakers (Realtek) (Windows default)
+  ──────────────
+  Quit
+```
+
+So picking "Headset (Jabra Evolve2 65)" captures the Jabra's *mic* and mixes it with whatever Windows is currently playing out — it does **not** route anything else.
+
+### Reading the tray icon
+
+While mixing, the icon changes color to reflect the current output level into VB-Cable. Hover for an exact dBFS reading.
+
+| Icon          | Meaning                      | Peak range                |
+|---------------|------------------------------|---------------------------|
+| ⚪ Grey       | Idle                         | —                         |
+| 🟢 Dim green  | Running, effectively silent  | below −40 dBFS            |
+| 🟢 Green      | Running, quiet               | −40 to −20 dBFS           |
+| 🟡 Amber      | Running, healthy levels      | −20 to −3 dBFS            |
+| 🔴 Red        | Clipping — output too hot    | −3 dBFS and above         |
+
+Don't want the color meter? Set `"show_level_meter": false` in `config.json` and you get the classic green-on-running behavior.
+
 ### Behavior notes
 
 - Selecting a different mic while mixing is disabled by design — stop first, switch, then start.
