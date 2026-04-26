@@ -16,7 +16,7 @@
 
 use anyhow::{Context, Result};
 use tracing::info;
-use wasapi::{initialize_mta, DeviceCollection, Direction};
+use wasapi::{DeviceCollection, Direction, initialize_mta};
 
 /// Information about an audio device — our simplified view.
 ///
@@ -50,16 +50,14 @@ const VBCABLE_NAMES: &[&str] = &["cable input", "cable output", "cable in "];
 pub fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
     // Initialize COM for Windows audio — WASAPI requires this
     // RUST CONCEPT: `.ok()` converts HRESULT to Result<()>
-    initialize_mta()
-        .ok()
-        .context("Failed to initialize COM")?;
+    initialize_mta().ok().context("Failed to initialize COM")?;
 
     let mut devices = Vec::new();
 
     // Enumerate capture (input) devices
     for direction in [Direction::Capture, Direction::Render] {
-        let collection = DeviceCollection::new(&direction)
-            .context("Failed to get device collection")?;
+        let collection =
+            DeviceCollection::new(&direction).context("Failed to get device collection")?;
 
         // RUST CONCEPT: Iterator pattern
         // ------------------------------
@@ -91,8 +89,7 @@ pub fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
 /// it's an "input" to the virtual cable, but a "render" device from WASAPI's perspective).
 pub fn find_vbcable(devices: &[DeviceInfo]) -> Option<&DeviceInfo> {
     devices.iter().find(|d| {
-        d.direction == DeviceDirection::Render
-            && d.name.to_lowercase().contains("cable input")
+        d.direction == DeviceDirection::Render && d.name.to_lowercase().contains("cable input")
     })
 }
 
@@ -123,9 +120,7 @@ fn is_vbcable(name: &str) -> bool {
 /// Get the default output device's loopback — this captures system audio.
 #[allow(dead_code)]
 pub fn get_default_render_device_id() -> Result<String> {
-    initialize_mta()
-        .ok()
-        .context("Failed to initialize COM")?;
+    initialize_mta().ok().context("Failed to initialize COM")?;
 
     let device = wasapi::get_default_device(&Direction::Render)
         .context("Failed to get default render device")?;
@@ -151,7 +146,10 @@ mod tests {
     fn test_find_vbcable() {
         let devices = vec![
             make_device("Speakers (Realtek)", DeviceDirection::Render),
-            make_device("CABLE Input (VB-Audio Virtual Cable)", DeviceDirection::Render),
+            make_device(
+                "CABLE Input (VB-Audio Virtual Cable)",
+                DeviceDirection::Render,
+            ),
             make_device("Microphone (Realtek)", DeviceDirection::Capture),
         ];
         let result = find_vbcable(&devices);
@@ -161,9 +159,7 @@ mod tests {
 
     #[test]
     fn test_find_vbcable_missing() {
-        let devices = vec![
-            make_device("Speakers (Realtek)", DeviceDirection::Render),
-        ];
+        let devices = vec![make_device("Speakers (Realtek)", DeviceDirection::Render)];
         assert!(find_vbcable(&devices).is_none());
     }
 

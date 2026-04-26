@@ -18,7 +18,7 @@ use anyhow::Result;
 use tracing::info;
 
 use super::capture::{start_capture_thread, start_render_thread};
-use super::mixer::{mix_samples, new_shared_buffer, SAMPLE_RATE, BYTES_PER_SAMPLE};
+use super::mixer::{BYTES_PER_SAMPLE, SAMPLE_RATE, mix_samples, new_shared_buffer};
 
 /// Buffer 2 seconds of audio
 const BUFFER_CAPACITY: usize = SAMPLE_RATE as usize * BYTES_PER_SAMPLE * 2;
@@ -88,7 +88,10 @@ impl Pipeline {
             Arc::clone(&stop_flag),
         )?;
 
-        info!("Pipeline started: mic={} vbcable={}", mic_device_id, vbcable_device_id);
+        info!(
+            "Pipeline started: mic={} vbcable={}",
+            mic_device_id, vbcable_device_id
+        );
 
         Ok(Pipeline {
             stop_flag,

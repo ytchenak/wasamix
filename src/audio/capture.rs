@@ -22,16 +22,14 @@
 //!   on it to wait for the thread to finish. The `()` means the thread
 //!   returns nothing (like Python's `None`).
 
+use anyhow::{Context, Result};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use anyhow::{Context, Result};
 use tracing::{debug, error, info, warn};
-use wasapi::{
-    DeviceCollection, Direction, SampleType, ShareMode, WaveFormat,
-};
+use wasapi::{DeviceCollection, Direction, SampleType, ShareMode, WaveFormat};
 
-use super::mixer::{convert_f32_to_mono_i16, RingBuffer, SAMPLE_RATE};
+use super::mixer::{RingBuffer, SAMPLE_RATE, convert_f32_to_mono_i16};
 
 /// Try to initialize an audio client for loopback capture on a device.
 /// Returns Ok(audio_client) if successful, or the error if it fails.
@@ -128,8 +126,7 @@ fn find_device_by_id(device_id: &str, direction: &Direction) -> Result<wasapi::D
         .map_err(|e| anyhow::anyhow!("Failed to get device collection: {}", e))?;
 
     for device_result in &collection {
-        let device = device_result
-            .map_err(|e| anyhow::anyhow!("Failed to get device: {}", e))?;
+        let device = device_result.map_err(|e| anyhow::anyhow!("Failed to get device: {}", e))?;
         let id = device
             .get_id()
             .map_err(|e| anyhow::anyhow!("Failed to get device ID: {}", e))?;
@@ -253,9 +250,8 @@ fn capture_loop(
         // Request our target format (mono i16 48kHz) instead of the device's
         // native format. With autoconvert, WASAPI resamples for us — critical
         // for devices like Bluetooth headsets that capture at 16kHz natively.
-        let target_format = WaveFormat::new(
-            16, 16, &SampleType::Int, SAMPLE_RATE as usize, 1, None,
-        );
+        let target_format =
+            WaveFormat::new(16, 16, &SampleType::Int, SAMPLE_RATE as usize, 1, None);
 
         ac.initialize_client(
             &target_format,
@@ -294,7 +290,8 @@ fn capture_loop(
             mix_format.get_nchannels(),
             mix_format.get_samplespersec(),
             mix_format.get_bitspersample(),
-            mix_format.get_subformat()
+            mix_format
+                .get_subformat()
                 .map_err(|e| anyhow::anyhow!("Failed to get sample type: {}", e))?,
             mix_format.get_blockalign() as usize,
         )
@@ -377,13 +374,14 @@ fn capture_loop(
             }
 
             // Read raw audio data from the device.
-            let (frames_read, _flags) = match capture_client.read_from_device(&mut read_buf[..needed]) {
-                Ok(result) => result,
-                Err(e) => {
-                    warn!("read_from_device failed: {}", e);
-                    break;
-                }
-            };
+            let (frames_read, _flags) =
+                match capture_client.read_from_device(&mut read_buf[..needed]) {
+                    Ok(result) => result,
+                    Err(e) => {
+                        warn!("read_from_device failed: {}", e);
+                        break;
+                    }
+                };
 
             if frames_read == 0 {
                 break;
@@ -493,19 +491,22 @@ fn render_loop(
 
     // Our desired output format: mono, 16-bit integer, 48kHz.
     let desired_format = WaveFormat::new(
-        16,                  // storebits: 16 bits per sample
-        16,                  // validbits: all 16 bits are valid
-        &SampleType::Int,    // PCM integer
+        16,               // storebits: 16 bits per sample
+        16,               // validbits: all 16 bits are valid
+        &SampleType::Int, // PCM integer
         SAMPLE_RATE as usize,
-        1,                   // mono (1 channel)
-        None,                // default channel mask
+        1,    // mono (1 channel)
+        None, // default channel mask
     );
 
     let (def_period, _min_period) = audio_client
         .get_periods()
         .map_err(|e| anyhow::anyhow!("Failed to get periods: {}", e))?;
 
-    debug!("Render: initializing with desired format: {:?}", desired_format);
+    debug!(
+        "Render: initializing with desired format: {:?}",
+        desired_format
+    );
 
     // Step 4: Initialize for rendering with auto-conversion.
     // `convert: true` adds AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM so WASAPI

@@ -2,7 +2,7 @@
 // Each file listed here becomes a submodule of `audio`.
 // Other code can use them via `crate::audio::devices`, etc.
 
+pub mod capture;
 pub mod devices;
 pub mod mixer;
-pub mod capture;
 pub mod pipeline;
