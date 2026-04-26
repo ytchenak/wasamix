@@ -57,16 +57,34 @@ cargo build --release
 
 ## How it works
 
-```
- ┌───────────────┐   mono i16    ┌──────────────┐
- │ mic capture   │──────────────▶│ mic ring buf │──┐
- │ thread (WASAPI)│   48 kHz     └──────────────┘  │
- └───────────────┘                                  │   sample-wise
-                                                    ├──▶  add + clamp  ──▶ ┌────────────────┐     ┌──────────────┐
- ┌───────────────┐   mono i16    ┌──────────────┐  │     (mix_samples)      │ render thread  │────▶│ VB-Cable     │
- │ loopback cap. │──────────────▶│ loop ring buf│──┘                         │ (WASAPI)       │     │ CABLE Input  │
- │ thread (WASAPI)│   48 kHz     └──────────────┘                            └────────────────┘     └──────────────┘
- └───────────────┘
+```mermaid
+flowchart LR
+    MIC["🎙️ Microphone<br/>(any native format)"]
+    SYS["🖥️ System audio<br/>(stereo f32 @ 48 kHz typical)"]
+
+    subgraph WASAMIX["wasamix process"]
+        direction LR
+        MCAP["mic capture thread<br/>WASAPI + AUTOCONVERTPCM"]
+        LCAP["loopback capture thread<br/>WASAPI loopback"]
+        MBUF[("mic ring buffer<br/>2 s · mono i16 @ 48 kHz")]
+        LBUF[("loopback ring buffer<br/>2 s · mono i16 @ 48 kHz")]
+        MIX{{"mix_samples<br/>sum + clamp to i16"}}
+        REND["render thread<br/>WASAPI + AUTOCONVERTPCM"]
+
+        MCAP -->|mono i16| MBUF
+        LCAP -->|converted to mono i16| LBUF
+        MBUF --> MIX
+        LBUF --> MIX
+        MIX -->|mono i16 @ 48 kHz| REND
+    end
+
+    CABLE["🔌 VB-Cable<br/>CABLE Input"]
+    APP["🎧 Recording app<br/>(Otter, OBS, Zoom, …)<br/>selects CABLE Output"]
+
+    MIC --> MCAP
+    SYS --> LCAP
+    REND --> CABLE
+    CABLE --> APP
 ```
 
 - Every WASAPI thread calls `CoInitializeEx(MTA)` on entry (COM is per-thread on Windows).
