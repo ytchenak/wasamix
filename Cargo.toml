@@ -14,7 +14,7 @@ default-run = "wasamix"
 
 [dependencies]
 # Windows audio API (WASAPI) — device enumeration, capture, render, loopback
-wasapi = "0.16"
+wasapi = "0.23"
 
 # System tray icon
 tray-icon = "0.22"

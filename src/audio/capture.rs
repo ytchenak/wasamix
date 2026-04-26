@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tracing::{debug, error, info, warn};
-use wasapi::{DeviceCollection, Direction, SampleType, ShareMode, WaveFormat};
+use wasapi::{DeviceEnumerator, Direction, SampleType, StreamMode, WaveFormat};
 
 use super::mixer::{RingBuffer, SAMPLE_RATE, convert_f32_to_mono_i16};
 
@@ -45,10 +45,11 @@ fn try_loopback_init(device: &wasapi::Device) -> Result<wasapi::AudioClient> {
     audio_client
         .initialize_client(
             &mix_format,
-            0,
             &Direction::Capture,
-            &ShareMode::Shared,
-            false,
+            &StreamMode::EventsShared {
+                autoconvert: false,
+                buffer_duration_hns: 0,
+            },
         )
         .map_err(|e| anyhow::anyhow!("initialize_client failed: {}", e))?;
 
@@ -66,7 +67,7 @@ fn try_loopback_init(device: &wasapi::Device) -> Result<wasapi::AudioClient> {
 /// loopback init.
 fn get_loopback_device(requested_id: &str) -> Result<(wasapi::Device, wasapi::AudioClient)> {
     if !requested_id.is_empty() {
-        let dev = find_device_by_id(requested_id, &Direction::Render)
+        let dev = find_device_by_id(requested_id)
             .map_err(|e| anyhow::anyhow!("Loopback source '{}' not found: {}", requested_id, e))?;
         let name = dev.get_friendlyname().unwrap_or_default();
         let ac = try_loopback_init(&dev).map_err(|e| {
@@ -81,7 +82,9 @@ fn get_loopback_device(requested_id: &str) -> Result<(wasapi::Device, wasapi::Au
         return Ok((dev, ac));
     }
 
-    let default_dev = wasapi::get_default_device(&Direction::Render)
+    let default_dev = DeviceEnumerator::new()
+        .map_err(|e| anyhow::anyhow!("Failed to create device enumerator: {}", e))?
+        .get_default_device(&Direction::Render)
         .map_err(|e| anyhow::anyhow!("Failed to get default render device: {}", e))?;
     let default_name = default_dev.get_friendlyname().unwrap_or_default();
 
@@ -98,7 +101,9 @@ fn get_loopback_device(requested_id: &str) -> Result<(wasapi::Device, wasapi::Au
         }
     }
 
-    let collection = DeviceCollection::new(&Direction::Render)
+    let collection = DeviceEnumerator::new()
+        .map_err(|e| anyhow::anyhow!("Failed to create device enumerator: {}", e))?
+        .get_device_collection(&Direction::Render)
         .map_err(|e| anyhow::anyhow!("Failed to enumerate render devices: {}", e))?;
 
     let default_id = default_dev.get_id().unwrap_or_default();
@@ -138,26 +143,15 @@ fn get_loopback_device(requested_id: &str) -> Result<(wasapi::Device, wasapi::Au
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
-/// Find a device by its ID string within a given direction's collection.
+/// Find a device by its ID string.
 ///
-/// The wasapi crate doesn't have a "get by ID" method, so we iterate through
-/// all devices and match. This is only done once at thread startup, so the
-/// cost is negligible.
-fn find_device_by_id(device_id: &str, direction: &Direction) -> Result<wasapi::Device> {
-    let collection = DeviceCollection::new(direction)
-        .map_err(|e| anyhow::anyhow!("Failed to get device collection: {}", e))?;
-
-    for device_result in &collection {
-        let device = device_result.map_err(|e| anyhow::anyhow!("Failed to get device: {}", e))?;
-        let id = device
-            .get_id()
-            .map_err(|e| anyhow::anyhow!("Failed to get device ID: {}", e))?;
-        if id == device_id {
-            return Ok(device);
-        }
-    }
-
-    anyhow::bail!("Device not found with ID: {}", device_id)
+/// Uses `DeviceEnumerator::get_device` which looks up the device directly by
+/// its Windows device ID — no iteration needed.
+fn find_device_by_id(device_id: &str) -> Result<wasapi::Device> {
+    DeviceEnumerator::new()
+        .map_err(|e| anyhow::anyhow!("Failed to create device enumerator: {}", e))?
+        .get_device(device_id)
+        .map_err(|e| anyhow::anyhow!("Device not found (id={}): {}", device_id, e))
 }
 
 /// Convert raw i16 (possibly multi-channel) audio bytes to mono i16 bytes.
@@ -266,7 +260,7 @@ fn capture_loop(
         // when non-empty, or "" meaning "Windows default with fallback".
         get_loopback_device(device_id)?
     } else {
-        let dev = find_device_by_id(device_id, &Direction::Capture)?;
+        let dev = find_device_by_id(device_id)?;
         let mut ac = dev
             .get_iaudioclient()
             .map_err(|e| anyhow::anyhow!("Failed to get audio client: {}", e))?;
@@ -279,10 +273,11 @@ fn capture_loop(
 
         ac.initialize_client(
             &target_format,
-            0,
             &Direction::Capture,
-            &ShareMode::Shared,
-            true,
+            &StreamMode::EventsShared {
+                autoconvert: true,
+                buffer_duration_hns: 0,
+            },
         )
         .map_err(|e| {
             let name = dev.get_friendlyname().unwrap_or_default();
@@ -331,14 +326,15 @@ fn capture_loop(
 
     // Set up event-driven buffering.
     // The wasapi crate always sets AUDCLNT_STREAMFLAGS_EVENTCALLBACK when
-    // initializing, so we MUST create and set an event handle. The event is
-    // signaled by WASAPI whenever a new buffer of audio data is ready.
+    // initializing with EventsShared mode, so we MUST create and set an event
+    // handle. The event is signaled by WASAPI whenever a new buffer of audio
+    // data is ready.
     let h_event = audio_client
         .set_get_eventhandle()
         .map_err(|e| anyhow::anyhow!("Failed to set event handle: {}", e))?;
 
     let buffer_frame_count = audio_client
-        .get_bufferframecount()
+        .get_buffer_size()
         .map_err(|e| anyhow::anyhow!("Failed to get buffer frame count: {}", e))?;
 
     // Step 5: Get the capture client and start the stream.
@@ -381,12 +377,12 @@ fn capture_loop(
         // data in multiple packets per event signal.
         loop {
             // Check how many frames are in the next packet.
-            let frames_available = match capture_client.get_next_nbr_frames() {
+            let frames_available = match capture_client.get_next_packet_size() {
                 Ok(Some(0)) => break,
                 Ok(Some(n)) => n,
                 Ok(None) => break, // exclusive mode — shouldn't happen
                 Err(e) => {
-                    warn!("get_next_nbr_frames failed: {}", e);
+                    warn!("get_next_packet_size failed: {}", e);
                     break;
                 }
             };
@@ -501,7 +497,7 @@ fn render_loop(
         .map_err(|e| anyhow::anyhow!("COM init failed: {:?}", e))?;
 
     // Step 2: Find the render device by ID.
-    let device = find_device_by_id(device_id, &Direction::Render)?;
+    let device = find_device_by_id(device_id)?;
     let name = device.get_friendlyname().unwrap_or_default();
     info!("Opened render device: {} ({})", name, device_id);
 
@@ -524,8 +520,8 @@ fn render_loop(
     );
 
     let (def_period, _min_period) = audio_client
-        .get_periods()
-        .map_err(|e| anyhow::anyhow!("Failed to get periods: {}", e))?;
+        .get_device_period()
+        .map_err(|e| anyhow::anyhow!("Failed to get device period: {}", e))?;
 
     debug!(
         "Render: initializing with desired format: {:?}",
@@ -533,15 +529,16 @@ fn render_loop(
     );
 
     // Step 4: Initialize for rendering with auto-conversion.
-    // `convert: true` adds AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM so WASAPI
+    // `autoconvert: true` adds AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM so WASAPI
     // accepts our mono i16 format even if the device uses float32 stereo.
     audio_client
         .initialize_client(
             &desired_format,
-            def_period,
             &Direction::Render,
-            &ShareMode::Shared,
-            true, // autoconvert — let WASAPI handle format conversion
+            &StreamMode::EventsShared {
+                autoconvert: true,
+                buffer_duration_hns: def_period,
+            },
         )
         .map_err(|e| anyhow::anyhow!("Failed to initialize render client: {}", e))?;
 
@@ -551,7 +548,7 @@ fn render_loop(
         .map_err(|e| anyhow::anyhow!("Failed to set event handle: {}", e))?;
 
     let buffer_frame_count = audio_client
-        .get_bufferframecount()
+        .get_buffer_size()
         .map_err(|e| anyhow::anyhow!("Failed to get buffer frame count: {}", e))?;
 
     let block_align = desired_format.get_blockalign() as usize; // 2 bytes (mono i16)

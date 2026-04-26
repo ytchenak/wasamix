@@ -16,7 +16,7 @@
 
 use anyhow::{Context, Result};
 use tracing::info;
-use wasapi::{DeviceCollection, Direction, initialize_mta};
+use wasapi::{DeviceEnumerator, Direction, initialize_mta};
 
 /// Information about an audio device — our simplified view.
 ///
@@ -69,11 +69,13 @@ pub fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
     initialize_mta().ok().context("Failed to initialize COM")?;
 
     let mut devices = Vec::new();
+    let enumerator = DeviceEnumerator::new().context("Failed to create device enumerator")?;
 
-    // Enumerate capture (input) devices
+    // Enumerate capture (input) and render (output) devices
     for direction in [Direction::Capture, Direction::Render] {
-        let collection =
-            DeviceCollection::new(&direction).context("Failed to get device collection")?;
+        let collection = enumerator
+            .get_device_collection(&direction)
+            .context("Failed to get device collection")?;
 
         // RUST CONCEPT: Iterator pattern
         // ------------------------------
@@ -157,7 +159,8 @@ pub fn filter_render_devices(devices: &[DeviceInfo]) -> Vec<DeviceInfo> {
 /// corresponding entry in the system-source selector with "(Windows default)".
 pub fn get_default_render_device_id_opt() -> Option<String> {
     initialize_mta().ok().ok()?;
-    let device = wasapi::get_default_device(&Direction::Render).ok()?;
+    let enumerator = DeviceEnumerator::new().ok()?;
+    let device = enumerator.get_default_device(&Direction::Render).ok()?;
     device.get_id().ok()
 }
 
@@ -193,7 +196,9 @@ pub fn is_vbcable(name: &str) -> bool {
 pub fn get_default_render_device_id() -> Result<String> {
     initialize_mta().ok().context("Failed to initialize COM")?;
 
-    let device = wasapi::get_default_device(&Direction::Render)
+    let enumerator = DeviceEnumerator::new().context("Failed to create device enumerator")?;
+    let device = enumerator
+        .get_default_device(&Direction::Render)
         .context("Failed to get default render device")?;
     let id = device.get_id().context("Failed to get device ID")?;
     let name = device.get_friendlyname().unwrap_or_default();

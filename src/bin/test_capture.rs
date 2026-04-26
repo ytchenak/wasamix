@@ -7,7 +7,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("COM initialized\n");
 
     // Enumerate ALL render devices
-    let collection = DeviceCollection::new(&Direction::Render)?;
+    let enumerator = DeviceEnumerator::new()?;
+    let collection = enumerator.get_device_collection(&Direction::Render)?;
     let mut devices: Vec<(String, String)> = Vec::new();
     for dev_result in &collection {
         let dev = dev_result?;
@@ -29,7 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("========================================");
 
         // Get device from collection again (can't reuse iteration)
-        let collection = DeviceCollection::new(&Direction::Render)?;
+        let collection = enumerator.get_device_collection(&Direction::Render)?;
         let mut target_dev = None;
         for dev_result in &collection {
             let dev = dev_result?;
@@ -58,7 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ch, rate, bits, subformat
         );
 
-        let (def_period, min_period) = audio_client.get_periods()?;
+        let (def_period, min_period) = audio_client.get_device_period()?;
         println!("  Periods: def={} min={}", def_period, min_period);
 
         // Test A: mix_format, period=0, Capture, Shared, no convert
@@ -67,10 +68,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut ac_a = device.get_iaudioclient()?;
         match ac_a.initialize_client(
             &mix_format,
-            0,
             &Direction::Capture,
-            &ShareMode::Shared,
-            false,
+            &StreamMode::EventsShared {
+                autoconvert: false,
+                buffer_duration_hns: 0,
+            },
         ) {
             Ok(()) => println!("  ✓ SUCCESS"),
             Err(e) => println!("  ✗ FAILED: {}", e),
@@ -84,10 +86,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut ac_b = device.get_iaudioclient()?;
         match ac_b.initialize_client(
             &mix_format,
-            def_period,
             &Direction::Capture,
-            &ShareMode::Shared,
-            false,
+            &StreamMode::EventsShared {
+                autoconvert: false,
+                buffer_duration_hns: def_period,
+            },
         ) {
             Ok(()) => println!("  ✓ SUCCESS"),
             Err(e) => println!("  ✗ FAILED: {}", e),
@@ -98,10 +101,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut ac_c = device.get_iaudioclient()?;
         match ac_c.initialize_client(
             &mix_format,
-            0,
             &Direction::Capture,
-            &ShareMode::Shared,
-            true,
+            &StreamMode::EventsShared {
+                autoconvert: true,
+                buffer_duration_hns: 0,
+            },
         ) {
             Ok(()) => println!("  ✓ SUCCESS"),
             Err(e) => println!("  ✗ FAILED: {}", e),
@@ -114,10 +118,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut ac_d = device.get_iaudioclient()?;
         match ac_d.initialize_client(
             &mix_format,
-            def_period,
             &Direction::Render,
-            &ShareMode::Shared,
-            true,
+            &StreamMode::EventsShared {
+                autoconvert: true,
+                buffer_duration_hns: def_period,
+            },
         ) {
             Ok(()) => println!("  ✓ SUCCESS"),
             Err(e) => println!("  ✗ FAILED: {}", e),
@@ -130,7 +135,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("========================================");
     println!("Default CAPTURE device (mic)");
     println!("========================================");
-    let mic_dev = get_default_device(&Direction::Capture)?;
+    let mic_dev = enumerator.get_default_device(&Direction::Capture)?;
     let mic_name = mic_dev.get_friendlyname().unwrap_or_default();
     println!("  Device: {}", mic_name);
 
@@ -144,17 +149,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         mic_fmt.get_subformat()?
     );
 
-    let (mic_def, mic_min) = mic_ac.get_periods()?;
+    let (mic_def, mic_min) = mic_ac.get_device_period()?;
     println!("  Periods: def={} min={}", mic_def, mic_min);
 
     println!("\n  --- Test: mix_format, min_period, Capture, Shared, convert=true ---");
     let mut mic_ac2 = mic_dev.get_iaudioclient()?;
     match mic_ac2.initialize_client(
         &mic_fmt,
-        mic_min,
         &Direction::Capture,
-        &ShareMode::Shared,
-        true,
+        &StreamMode::EventsShared {
+            autoconvert: true,
+            buffer_duration_hns: mic_min,
+        },
     ) {
         Ok(()) => println!("  ✓ SUCCESS"),
         Err(e) => println!("  ✗ FAILED: {}", e),
