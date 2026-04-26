@@ -138,6 +138,25 @@ pub fn new_shared_buffer(capacity: usize) -> Arc<Mutex<RingBuffer>> {
 /// Audio arrives as `&[u8]` (raw bytes) but we need to treat it as i16
 /// samples. We use `i16::from_le_bytes()` to convert pairs of bytes into
 /// signed 16-bit integers (little-endian, which is what Windows uses).
+/// Return the peak absolute amplitude of mono i16 audio bytes, in the
+/// range 0..=32768. `0` means silence; `32768` means clipped.
+///
+/// We keep the unsigned range (u16) so the tray thread can read it as an
+/// AtomicU32 without sign handling.
+pub fn peak_i16(data: &[u8]) -> u16 {
+    let mut peak: u16 = 0;
+    for chunk in data.chunks_exact(BYTES_PER_SAMPLE) {
+        let s = i16::from_le_bytes([chunk[0], chunk[1]]);
+        // i16::MIN (-32768) has |.| = 32768 which doesn't fit in i16 — use
+        // unsigned_abs which widens to u16 and handles the edge cleanly.
+        let abs = s.unsigned_abs();
+        if abs > peak {
+            peak = abs;
+        }
+    }
+    peak
+}
+
 pub fn mix_samples(mic: &[u8], loopback: &[u8]) -> Vec<u8> {
     if mic.is_empty() && loopback.is_empty() {
         return Vec::new();
@@ -289,6 +308,29 @@ mod tests {
     #[test]
     fn test_mix_empty() {
         assert!(mix_samples(&[], &[]).is_empty());
+    }
+
+    #[test]
+    fn test_peak_silence() {
+        assert_eq!(peak_i16(&[]), 0);
+        assert_eq!(peak_i16(&[0, 0, 0, 0]), 0);
+    }
+
+    #[test]
+    fn test_peak_positive_and_negative() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&1000i16.to_le_bytes());
+        data.extend_from_slice(&(-5000i16).to_le_bytes());
+        data.extend_from_slice(&100i16.to_le_bytes());
+        assert_eq!(peak_i16(&data), 5000);
+    }
+
+    #[test]
+    fn test_peak_extreme_min_value() {
+        // i16::MIN (-32768) — its absolute value doesn't fit in i16; must
+        // return 32768 (u16::from(i16::MIN.unsigned_abs())).
+        let data = i16::MIN.to_le_bytes();
+        assert_eq!(peak_i16(&data), 32768);
     }
 
     #[test]

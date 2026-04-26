@@ -130,6 +130,16 @@ pub fn get_default_render_device_id() -> Result<String> {
     Ok(id)
 }
 
+/// Friendly name of the default render device — shown in the tray menu so
+/// users can tell which speakers/headphones wasamix is capturing system
+/// audio from. Returns `None` if the device has no friendly name or we
+/// can't reach the enumerator.
+pub fn get_default_render_device_name() -> Option<String> {
+    initialize_mta().ok().ok()?;
+    let device = wasapi::get_default_device(&Direction::Render).ok()?;
+    device.get_friendlyname().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

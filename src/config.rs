@@ -24,6 +24,16 @@ pub struct Config {
     /// `Option<String>` means this field can be `Some("device-id")` or `None`.
     /// We store the device ID as a string because WASAPI device IDs are strings.
     pub mic_device_id: Option<String>,
+
+    /// Whether the tray icon color-codes the current output level.
+    /// `#[serde(default = "...")]` lets older config.json files (missing this
+    /// field) still deserialize — they get `default_show_level_meter()`.
+    #[serde(default = "default_show_level_meter")]
+    pub show_level_meter: bool,
+}
+
+fn default_show_level_meter() -> bool {
+    true
 }
 
 /// `impl` blocks attach methods to a struct — similar to defining methods
@@ -76,6 +86,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             mic_device_id: None,
+            show_level_meter: default_show_level_meter(),
         }
     }
 }
@@ -101,10 +112,24 @@ mod tests {
         let path = dir.path().join("config.json");
         let config = Config {
             mic_device_id: Some("test-device-123".to_string()),
+            show_level_meter: false,
         };
         config.save_to(&path).unwrap();
         let loaded = Config::load_from(&path).unwrap();
         assert_eq!(loaded.mic_device_id, Some("test-device-123".to_string()));
+        assert!(!loaded.show_level_meter);
+    }
+
+    #[test]
+    fn test_load_legacy_without_level_meter_field() {
+        // A config.json written by wasamix 0.1.0 won't have show_level_meter.
+        // It should still load, defaulting show_level_meter to true.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        fs::write(&path, r#"{"mic_device_id":"abc"}"#).unwrap();
+        let loaded = Config::load_from(&path).unwrap();
+        assert_eq!(loaded.mic_device_id, Some("abc".to_string()));
+        assert!(loaded.show_level_meter);
     }
 
     #[test]
