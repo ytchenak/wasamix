@@ -402,16 +402,16 @@ impl TrayApp {
     /// menu item was clicked. This is similar to a command dispatch pattern.
     fn handle_menu_event(&mut self, event: MenuEvent) {
         // Check if this is the Quit item
-        if let Some(quit_id) = &self.quit_item_id {
-            if &event.id == quit_id {
-                info!("Quit selected — shutting down");
-                // Stop mixing before exiting (cleanup happens via Drop)
-                self.stop_mixing();
-                // The event loop will be exited in about_to_wait
-                // We signal by dropping the tray icon
-                self.tray_icon = None;
-                return;
-            }
+        if let Some(quit_id) = &self.quit_item_id
+            && event.id == *quit_id
+        {
+            info!("Quit selected — shutting down");
+            // Stop mixing before exiting (cleanup happens via Drop)
+            self.stop_mixing();
+            // The event loop will be exited in about_to_wait
+            // We signal by dropping the tray icon
+            self.tray_icon = None;
+            return;
         }
 
         // Check if this is a mic selection item
@@ -437,18 +437,16 @@ impl TrayApp {
     /// as a wildcard). This ensures we don't forget to handle a case —
     /// the compiler checks this at compile time.
     fn handle_tray_event(&mut self, event: TrayIconEvent) {
-        match event {
-            TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } => {
-                // Left-click release = toggle mixing on/off
-                self.toggle_mixing();
-            }
-            // We ignore right-clicks (the menu handles those automatically),
-            // double-clicks, hover/enter/leave events, etc.
-            _ => {}
+        // Left-click release = toggle mixing on/off.
+        // Right-clicks (menu handled by the OS), double-clicks, hover/enter/leave
+        // are all intentionally ignored.
+        if let TrayIconEvent::Click {
+            button: MouseButton::Left,
+            button_state: MouseButtonState::Up,
+            ..
+        } = event
+        {
+            self.toggle_mixing();
         }
     }
 
