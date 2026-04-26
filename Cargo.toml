@@ -20,7 +20,7 @@ wasapi = "0.16"
 tray-icon = "0.22"
 
 # Native context menus for the tray
-muda = "0.17"
+muda = "0.18"
 
 # Event loop needed by tray-icon on Windows
 winit = "0.30"
