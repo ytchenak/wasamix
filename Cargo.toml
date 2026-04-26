@@ -17,7 +17,7 @@ default-run = "wasamix"
 wasapi = "0.16"
 
 # System tray icon
-tray-icon = "0.19"
+tray-icon = "0.22"
 
 # Native context menus for the tray
 muda = "0.16"
