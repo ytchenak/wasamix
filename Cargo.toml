@@ -30,7 +30,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # Audio resampling — converts between sample rates
-rubato = "0.16"
+rubato = "2.0"
 
 # Structured logging — modern replacement for println! debugging
 tracing = "0.1"
