@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-04-26
+
+### Changed
+
+- Re-recorded the tray demo GIF to reflect the 0.3.0 two-selector menu
+  (input microphone + output sound).
+- README caption updated to match: the right-click hint now mentions
+  picking the mic and what you're listening to, and the running-state
+  description matches the color-coded level meter.
+
 ## [0.3.0] - 2026-04-26
 
 ### Changed
@@ -89,7 +99,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AUTOCONVERTPCM`-based format normalization so Bluetooth mics (16 kHz native) and stereo f32 loopback streams all flow through the same mono-i16-@-48kHz pipeline.
 - Diagnostic binaries `test_capture` and `test_pipeline`.
 
-[Unreleased]: https://github.com/ytchenak/wasamix/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/ytchenak/wasamix/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/ytchenak/wasamix/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/ytchenak/wasamix/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ytchenak/wasamix/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ytchenak/wasamix/releases/tag/v0.1.0
