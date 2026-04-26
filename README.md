@@ -55,45 +55,37 @@ cargo build --release
 
 ### What the tray menu is for
 
-The right-click menu has three independent selectors — one per audio slot. All three are disabled while mixing; stop, switch, start.
+Two selectors — what goes in, what you're listening to — and Quit. Both disabled while mixing; stop, switch, start.
 
 ```
 🎙  Input microphone:
   ● Microphone (HD Pro Webcam C920)
   ○ Headset (Jabra Evolve2 65)
   ─────────────
-🔊 System audio source:
+🔊 Output sound (what you hear):
   ● (Windows default — Speakers (Realtek))
   ○ Speakers (Realtek)
   ○ Headset (Jabra Evolve2 65)
-  ○ Digital Output
-  ─────────────
-📤 Output destination:
-  ○ Speakers (Realtek)
-  ● CABLE Input (VB-Audio Virtual Cable)  ← recording target
-  ○ CABLE-B Input
   ─────────────
   Quit
 ```
 
 - **Input microphone** — whose voice gets captured.
-- **System audio source** — which render device is loopback-captured. `(Windows default)` follows whatever Windows is routing right now; pinning a specific device ignores Windows default changes.
-- **Output destination** — where the mix is written. Usually VB-Cable; pick something else to route into OBS Virtual Audio, a second cable, or a real speaker for debugging.
+- **Output sound** — which render device is loopback-captured (i.e. what gets mixed alongside your voice). `(Windows default)` follows whatever Windows routes now; pinning a device stays fixed even if Windows switches.
+
+The **mix destination is automatic**: wasamix detects VB-Audio Virtual Cable and writes the mix there (preferring the plain `CABLE Input` over the 16-channel Voicemeeter variant). If VB-Cable isn't installed, the tray tooltip says so and left-click refuses to start — install VB-Cable, relaunch, done.
 
 Selecting a device **does not** start mixing — left-click the tray icon when you're ready.
 
-#### Avoiding feedback loops
+#### Pinning a different destination
 
-If you ever set **system-audio source == output destination**, the output would be re-captured as input on the next tick → infinite howl. wasamix refuses the combination — both when you try to pick it in the menu and again at start-time — so you can't accidentally melt your speakers.
+Power users who want to target a different virtual cable (OBS Virtual Audio, `CABLE-B Input`, etc.) can edit `config.json` next to the exe and set:
 
-#### Example configurations
+```json
+{ "output_device_id": "<wasapi-id-of-the-device>" }
+```
 
-| Goal                                                     | Mic   | System source  | Output     |
-|----------------------------------------------------------|-------|----------------|------------|
-| Record a meeting with your voice + what you're hearing   | USB mic | (Windows default) | CABLE Input |
-| Game-audio capture while music plays elsewhere           | USB mic | Headset       | CABLE Input |
-| Multi-stream (two recorders at once)                     | USB mic | Speakers      | CABLE-B Input |
-| Dry-run without VB-Cable (listen to the mix yourself)    | USB mic | Headset       | Speakers    |
+The IDs come from the tracing logs at INFO level (run `RUST_LOG=info .\wasamix.exe` from a terminal to see them).
 
 ### Reading the tray icon
 

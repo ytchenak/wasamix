@@ -39,7 +39,23 @@ pub enum DeviceDirection {
     Render,
 }
 
-const VBCABLE_NAMES: &[&str] = &["cable input", "cable output", "cable in "];
+/// Substrings that identify a VB-Audio virtual-cable endpoint. Order
+/// doesn't matter; matching is case-insensitive `.contains()`.
+///
+/// Covers:
+///   - `CABLE Input` / `CABLE Output` (standard cable)
+///   - `CABLE-B Input` / `CABLE-B Output` / etc. (extra standalone cables)
+///   - `CABLE In 16ch` / `CABLE Out 16ch` (Voicemeeter companion)
+///
+/// The `vb-audio` tag catches any future naming we don't anticipate.
+const VBCABLE_NAMES: &[&str] = &[
+    "cable input",
+    "cable output",
+    "cable-",
+    "cable in ",
+    "cable out ",
+    "vb-audio",
+];
 
 /// Enumerate all active audio devices.
 ///
@@ -84,22 +100,55 @@ pub fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
     Ok(devices)
 }
 
-/// Find VB-Cable's render (output) device index — this is where we WRITE the mixed audio.
+/// Find VB-Cable's render (output) device — where we WRITE the mixed audio.
 /// VB-Cable's render endpoint is named "CABLE Input" (confusing but correct:
-/// it's an "input" to the virtual cable, but a "render" device from WASAPI's perspective).
+/// it's an "input" to the virtual cable, but a "render" device from WASAPI's
+/// perspective).
+///
+/// Preference order (for users who have the full VB-Audio suite installed):
+/// 1. plain `CABLE Input`  — the standard 2-channel endpoint
+/// 2. `CABLE-B Input` / `CABLE-C Input` etc. — other standalone cables
+/// 3. `CABLE In 16ch`      — the 16-channel Voicemeeter companion, last-resort
 pub fn find_vbcable(devices: &[DeviceInfo]) -> Option<&DeviceInfo> {
-    devices.iter().find(|d| {
-        d.direction == DeviceDirection::Render && d.name.to_lowercase().contains("cable input")
-    })
+    let render_cables: Vec<&DeviceInfo> = devices
+        .iter()
+        .filter(|d| d.direction == DeviceDirection::Render && is_vbcable(&d.name))
+        .collect();
+
+    // Tier 1: exact "CABLE Input", excluding the 16-channel variant.
+    if let Some(d) = render_cables
+        .iter()
+        .find(|d| {
+            let l = d.name.to_lowercase();
+            l.contains("cable input") && !l.contains("16ch")
+        })
+        .copied()
+    {
+        return Some(d);
+    }
+    // Tier 2: any other non-16ch CABLE endpoint (CABLE-B Input, etc.).
+    if let Some(d) = render_cables
+        .iter()
+        .find(|d| !d.name.to_lowercase().contains("16ch"))
+        .copied()
+    {
+        return Some(d);
+    }
+    // Tier 3: last resort — 16ch variant.
+    render_cables.into_iter().next()
 }
 
-/// Filter to render (output) devices. Useful for the "system audio source"
-/// and "output destination" selectors — both operate on render devices,
-/// just in different ways (loopback capture vs. normal render).
+/// Filter to "real" output devices — render endpoints the user actually
+/// listens through. Excludes VB-Cable endpoints (they're our destination,
+/// not a sound source) and loopback aliases.
 pub fn filter_render_devices(devices: &[DeviceInfo]) -> Vec<DeviceInfo> {
     devices
         .iter()
-        .filter(|d| d.direction == DeviceDirection::Render && !d.name.contains("[Loopback]"))
+        .filter(|d| {
+            d.direction == DeviceDirection::Render
+                && !d.name.contains("[Loopback]")
+                && !is_vbcable(&d.name)
+        })
         .cloned()
         .collect()
 }
@@ -131,7 +180,10 @@ pub fn filter_input_devices(devices: &[DeviceInfo]) -> Vec<DeviceInfo> {
         .collect()
 }
 
-fn is_vbcable(name: &str) -> bool {
+/// True if `name` looks like any VB-Audio virtual-cable endpoint (Input or
+/// Output side, any cable letter, any channel width). Used both to keep
+/// cables out of mic/output lists and to recognize them as destinations.
+pub fn is_vbcable(name: &str) -> bool {
     let lower = name.to_lowercase();
     VBCABLE_NAMES.iter().any(|tag| lower.contains(tag))
 }
@@ -193,5 +245,76 @@ mod tests {
         let result = filter_input_devices(&devices);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "Microphone (Realtek)");
+    }
+
+    #[test]
+    fn test_find_vbcable_prefers_standard_over_16ch() {
+        // Order is deliberately "16ch first" to prove find_vbcable scores,
+        // not just picks the first match.
+        let devices = vec![
+            make_device("Speakers (Realtek)", DeviceDirection::Render),
+            make_device(
+                "CABLE In 16ch (VB-Audio Voicemeeter)",
+                DeviceDirection::Render,
+            ),
+            make_device(
+                "CABLE Input (VB-Audio Virtual Cable)",
+                DeviceDirection::Render,
+            ),
+        ];
+        let picked = find_vbcable(&devices).expect("should find a cable");
+        assert!(
+            picked.name.contains("CABLE Input") && !picked.name.contains("16ch"),
+            "expected plain CABLE Input, got: {}",
+            picked.name
+        );
+    }
+
+    #[test]
+    fn test_find_vbcable_falls_back_to_16ch() {
+        // If only the 16ch variant is installed, use it.
+        let devices = vec![
+            make_device("Speakers (Realtek)", DeviceDirection::Render),
+            make_device(
+                "CABLE In 16ch (VB-Audio Voicemeeter)",
+                DeviceDirection::Render,
+            ),
+        ];
+        let picked = find_vbcable(&devices).expect("should find a cable");
+        assert!(picked.name.contains("16ch"));
+    }
+
+    #[test]
+    fn test_filter_render_excludes_all_vbcable_variants() {
+        let devices = vec![
+            make_device("Speakers (Realtek)", DeviceDirection::Render),
+            make_device("Headset (Jabra Evolve2 65)", DeviceDirection::Render),
+            make_device(
+                "CABLE Input (VB-Audio Virtual Cable)",
+                DeviceDirection::Render,
+            ),
+            make_device("CABLE-B Input (VB-Audio)", DeviceDirection::Render),
+            make_device(
+                "CABLE In 16ch (VB-Audio Voicemeeter)",
+                DeviceDirection::Render,
+            ),
+            make_device("Speakers [Loopback]", DeviceDirection::Render),
+        ];
+        let result = filter_render_devices(&devices);
+        let names: Vec<&str> = result.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["Speakers (Realtek)", "Headset (Jabra Evolve2 65)"]
+        );
+    }
+
+    #[test]
+    fn test_is_vbcable_matches_hyphenated_variants() {
+        assert!(is_vbcable("CABLE Input (VB-Audio Virtual Cable)"));
+        assert!(is_vbcable("CABLE-B Input (VB-Audio)"));
+        assert!(is_vbcable("CABLE Output (VB-Audio)"));
+        assert!(is_vbcable("CABLE In 16ch (VB-Audio Voicemeeter)"));
+        assert!(!is_vbcable("Speakers (Realtek)"));
+        assert!(!is_vbcable("Headset (Jabra Evolve2 65)"));
     }
 }
