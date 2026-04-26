@@ -58,12 +58,12 @@ cargo build --release
 ## How it works
 
 ```mermaid
-flowchart LR
+flowchart TB
     MIC["🎙️ Microphone<br/>(any native format)"]
-    SYS["🖥️ System audio<br/>(stereo f32 @ 48 kHz typical)"]
+    SYS["🖥️ System audio<br/>(stereo f32 @ 48 kHz)"]
 
     subgraph WASAMIX["wasamix process"]
-        direction LR
+        direction TB
         MCAP["mic capture thread<br/>WASAPI + AUTOCONVERTPCM"]
         LCAP["loopback capture thread<br/>WASAPI loopback"]
         MBUF[("mic ring buffer<br/>2 s · mono i16 @ 48 kHz")]
@@ -71,15 +71,15 @@ flowchart LR
         MIX{{"mix_samples<br/>sum + clamp to i16"}}
         REND["render thread<br/>WASAPI + AUTOCONVERTPCM"]
 
-        MCAP -->|mono i16| MBUF
-        LCAP -->|converted to mono i16| LBUF
+        MCAP --> MBUF
+        LCAP --> LBUF
         MBUF --> MIX
         LBUF --> MIX
-        MIX -->|mono i16 @ 48 kHz| REND
+        MIX --> REND
     end
 
     CABLE["🔌 VB-Cable<br/>CABLE Input"]
-    APP["🎧 Recording app<br/>(Otter, OBS, Zoom, …)<br/>selects CABLE Output"]
+    APP["🎧 Recording app<br/>Otter · OBS · Zoom · …"]
 
     MIC --> MCAP
     SYS --> LCAP
