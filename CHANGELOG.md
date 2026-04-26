@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Bumped `muda` 0.16 → 0.17, `tray-icon` 0.19 → 0.22, `windows` 0.61 → 0.62.
+- Removed unused `rubato` dependency (WASAPI's `AUTOCONVERTPCM` covers all
+  resampling needs).
+- CI: upgraded to `actions/checkout@v6`, `actions/upload-artifact@v7`,
+  `actions/download-artifact@v8`, `softprops/action-gh-release@v3`.
+
+### Known issues
+
+- Tracked in [#10](https://github.com/ytchenak/wasamix/issues/10): migrating to
+  `wasapi` 0.23 needs a code-level API update; staying on 0.16 for 0.1.0.
+
 ## [0.1.0] - 2026-04-26
 
 ### Added
