@@ -38,7 +38,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::WindowId;
 
-use crate::audio::devices::{self, DeviceInfo};
+use crate::audio::devices::{self, DeviceDirection, DeviceInfo};
 use crate::audio::pipeline::Pipeline;
 use crate::config::Config;
 
@@ -112,6 +112,15 @@ fn append_header(menu: &Menu, text: &str) -> Result<()> {
     menu.append(&item).context("Failed to append menu header")
 }
 
+/// Trim the trailing vendor tag from VB-Audio device names for tooltip
+/// display. `CABLE Input (VB-Audio Virtual Cable)` → `CABLE Input`.
+fn shorten_cable_name(name: &str) -> String {
+    match name.find(" (") {
+        Some(i) => name[..i].to_string(),
+        None => name.to_string(),
+    }
+}
+
 /// A radio-group selector rendered as a sequence of `CheckMenuItem`s plus
 /// menu-id ↔ value maps. `None` as the value means "(auto) — whatever the
 /// default resolves to right now" (only used by the system-source group).
@@ -172,14 +181,22 @@ pub struct TrayApp {
     /// All available input (microphone) devices.
     input_devices: Vec<DeviceInfo>,
 
-    /// All available render (output) devices — used for both the "system
-    /// audio source" selector (via loopback capture) and the "output
-    /// destination" selector.
+    /// "Real" render devices (speakers, headphones) the user can listen
+    /// through. VB-Cable endpoints are filtered out up-stream.
     render_devices: Vec<DeviceInfo>,
 
     /// ID of the Windows-default render device at startup — used to tag the
     /// corresponding row in the system-source selector.
     default_render_id: Option<String>,
+
+    /// Resolved VB-Cable destination: concrete `Some(id)` of the preferred
+    /// CABLE Input, or `None` if VB-Cable isn't installed. Set once at
+    /// startup; not user-configurable from the menu. Power users can pin a
+    /// specific ID via `output_device_id` in `config.json`.
+    vbcable_id: Option<String>,
+
+    /// Friendly name of the resolved destination, for the tooltip.
+    vbcable_name: Option<String>,
 
     /// Currently selected microphone device ID.
     selected_mic_id: Option<String>,
@@ -188,17 +205,12 @@ pub struct TrayApp {
     /// `Some(id)` = pinned render device.
     selected_system_source_id: Option<String>,
 
-    /// Currently selected output (destination) device ID. Always concrete —
-    /// we resolve "(auto) VB-Cable" up-front in `new()`.
-    selected_output_id: Option<String>,
-
     /// The context menu shown on right-click.
     menu: Option<Menu>,
 
-    /// Radio-group state for each of the three selectors.
+    /// Radio-group state for each selector.
     mic_group: MenuGroup,
     system_source_group: MenuGroup,
-    output_group: MenuGroup,
 
     /// The "Quit" menu item — stored so we can identify its ID in event handling.
     quit_item_id: Option<MenuId>,
@@ -234,7 +246,18 @@ impl TrayApp {
         let input_devices = devices::filter_input_devices(&all_devices);
         let render_devices = devices::filter_render_devices(&all_devices);
         let default_render_id = devices::get_default_render_device_id_opt();
-        let vbcable_id = devices::find_vbcable(&all_devices).map(|d| d.id.clone());
+
+        // Resolve the mix destination. Normally auto-detected (prefer
+        // plain "CABLE Input" over "CABLE In 16ch"); power users can pin
+        // a specific endpoint via Config::output_device_id.
+        let pinned_output = config.output_device_id.as_deref().and_then(|pinned| {
+            all_devices
+                .iter()
+                .find(|d| d.direction == DeviceDirection::Render && d.id == pinned)
+        });
+        let vbcable = pinned_output.or_else(|| devices::find_vbcable(&all_devices));
+        let vbcable_id = vbcable.map(|d| d.id.clone());
+        let vbcable_name = vbcable.map(|d| d.name.clone());
 
         info!("Found {} input device(s)", input_devices.len());
         for d in &input_devices {
@@ -244,8 +267,9 @@ impl TrayApp {
         for d in &render_devices {
             info!("  - {} ({})", d.name, d.id);
         }
-        if vbcable_id.is_none() {
-            warn!("VB-Cable not auto-detected — user must pick an output manually");
+        match &vbcable_name {
+            Some(n) => info!("Mix destination: {}", n),
+            None => warn!("VB-Cable not found — install VB-Audio Virtual Cable to use wasamix"),
         }
 
         // Mic: saved config > first available > none.
@@ -262,19 +286,9 @@ impl TrayApp {
             .clone()
             .filter(|saved| render_devices.iter().any(|d| &d.id == saved));
 
-        // Output: saved config if still present, else VB-Cable if found,
-        // else first render device (so *something* is selected). User can
-        // override at any time from the menu.
-        let selected_output_id = config
-            .output_device_id
-            .clone()
-            .filter(|saved| render_devices.iter().any(|d| &d.id == saved))
-            .or(vbcable_id)
-            .or_else(|| render_devices.first().map(|d| d.id.clone()));
-
         info!(
-            "Initial selection: mic={:?} system_source={:?} output={:?}",
-            selected_mic_id, selected_system_source_id, selected_output_id
+            "Initial selection: mic={:?} system_source={:?}",
+            selected_mic_id, selected_system_source_id
         );
 
         Ok(TrayApp {
@@ -284,42 +298,31 @@ impl TrayApp {
             input_devices,
             render_devices,
             default_render_id,
+            vbcable_id,
+            vbcable_name,
             selected_mic_id,
             selected_system_source_id,
-            selected_output_id,
             menu: None,
             mic_group: MenuGroup::new(),
             system_source_group: MenuGroup::new(),
-            output_group: MenuGroup::new(),
             quit_item_id: None,
             current_bucket: LevelBucket::Idle,
             next_tick: Instant::now(),
         })
     }
 
-    /// Resolve `selected_system_source_id` to a concrete device ID for the
-    /// feedback-loop guard. `None` means "Windows default" → use the
-    /// detected default_render_id (which may itself be `None` if we failed
-    /// to query). Returns the ID, or `None` if we genuinely don't know.
-    fn effective_system_source_id(&self) -> Option<String> {
-        self.selected_system_source_id
-            .clone()
-            .or_else(|| self.default_render_id.clone())
-    }
-
     /// Build (or rebuild) the right-click context menu.
     ///
-    /// Three selector sections (mic / system source / output) plus Quit.
-    /// Each selector is a radio-style `CheckMenuItem` list under a disabled
-    /// header. All selectors are disabled while mixing so the user can't
-    /// rewire audio mid-stream; stop, switch, start.
+    /// Two selector sections — input mic, output sound (what you listen
+    /// through; drives loopback capture) — plus Quit. The mix destination
+    /// (VB-Cable) is resolved automatically and not exposed in the menu.
+    /// All selectors are disabled while mixing; stop, switch, start.
     fn build_menu(&mut self) -> Result<Menu> {
         let menu = Menu::new();
         let is_mixing = self.pipeline.is_some();
 
         self.mic_group.clear();
         self.system_source_group.clear();
-        self.output_group.clear();
 
         // --- Section 1: input microphone -----------------------------------
         append_header(&menu, "\u{1F399}  Input microphone:")?;
@@ -337,13 +340,13 @@ impl TrayApp {
                 .context("Failed to append mic placeholder")?;
         }
 
-        // --- Section 2: system-audio source --------------------------------
-        // This is what gets loopback-captured. Users who flip Windows output
-        // devices (speakers → headphones) usually want to track that, so we
-        // offer "(Windows default)" as the first, default-checked row.
+        // --- Section 2: output sound (loopback source) --------------------
+        // Named "Output sound (what you hear)" because that's what users
+        // actually think about — not "system audio source". The selection
+        // here is the render device we loopback-capture to feed the mix.
         menu.append(&PredefinedMenuItem::separator())
             .context("Failed to append separator")?;
-        append_header(&menu, "\u{1F50A} System audio source:")?;
+        append_header(&menu, "\u{1F50A} Output sound (what you hear):")?;
 
         let default_row_label = match self.default_render_id.as_ref() {
             Some(id) => match self.render_devices.iter().find(|d| &d.id == id) {
@@ -373,38 +376,11 @@ impl TrayApp {
                 .push((item.id().clone(), Some(device.id.clone())));
             self.system_source_group.items.push(item.clone());
             menu.append(&item)
-                .context("Failed to append system-source item")?;
+                .context("Failed to append output-sound item")?;
         }
         if self.render_devices.is_empty() {
-            menu.append(&MenuItem::new("(no render devices found)", false, None))
-                .context("Failed to append system-source placeholder")?;
-        }
-
-        // --- Section 3: output destination ---------------------------------
-        // Usually VB-Cable — but a user may want to target OBS Virtual Audio,
-        // CABLE-B, or a real speaker for debugging. So it's a full selector.
-        menu.append(&PredefinedMenuItem::separator())
-            .context("Failed to append separator")?;
-        append_header(&menu, "\u{1F4E4} Output destination:")?;
-
-        for device in &self.render_devices {
-            let is_selected = self.selected_output_id.as_deref() == Some(&device.id);
-            // Tag VB-Cable so users know which one Otter/etc. listens to.
-            let label = if device.name.to_lowercase().contains("cable input") {
-                format!("{}  ← recording target", device.name)
-            } else {
-                device.name.clone()
-            };
-            let item = CheckMenuItem::new(&label, !is_mixing, is_selected, None);
-            self.output_group
-                .id_map
-                .push((item.id().clone(), Some(device.id.clone())));
-            self.output_group.items.push(item.clone());
-            menu.append(&item).context("Failed to append output item")?;
-        }
-        if self.render_devices.is_empty() {
-            menu.append(&MenuItem::new("(no render devices found)", false, None))
-                .context("Failed to append output placeholder")?;
+            menu.append(&MenuItem::new("(no output devices found)", false, None))
+                .context("Failed to append output-sound placeholder")?;
         }
 
         // --- Quit ----------------------------------------------------------
@@ -475,35 +451,20 @@ impl TrayApp {
 
     /// Start the audio pipeline — mic + system loopback → output device.
     ///
-    /// Runs the feedback-loop guard first: if the user has set
-    /// system-audio-source == output-destination, mixing would create an
-    /// infinite howl. We refuse and log rather than routing it anyway.
     fn start_mixing(&mut self) {
         let Some(mic_id) = self.selected_mic_id.clone() else {
             warn!("Cannot start mixing: no microphone selected");
             return;
         };
 
-        let Some(output_id) = self.selected_output_id.clone() else {
-            warn!("Cannot start mixing: no output destination selected");
-            return;
-        };
-
-        // Feedback-loop guard. We compare the *effective* system-source ID
-        // (which for `None` means "Windows default → default_render_id") to
-        // the output. If they collide, starting would route our own output
-        // back into the mix and cause runaway feedback.
-        if let Some(sys_id) = self.effective_system_source_id()
-            && sys_id == output_id
-        {
+        let Some(output_id) = self.vbcable_id.clone() else {
             error!(
-                "Refusing to start: system-audio source and output destination are the same \
-                 device ({}). This would cause feedback. Pick a different output (usually a \
-                 VB-Cable endpoint).",
-                sys_id
+                "Cannot start mixing: VB-Audio Virtual Cable not found. Install it from \
+                 https://vb-audio.com/Cable/ — wasamix writes the mix there so your recording \
+                 app can pick it up as a microphone."
             );
             return;
-        }
+        };
 
         info!(
             "Starting pipeline: mic={} system_source={:?} output={}",
@@ -580,17 +541,27 @@ impl TrayApp {
 
         // Tooltip is cheap to recompute and users see the dB value update
         // as they hover — so we refresh it every tick while mixing.
+        let dest_hint = match self.vbcable_name.as_deref() {
+            Some(name) => format!(" → {}", shorten_cable_name(name)),
+            None => " · VB-Cable not installed".to_string(),
+        };
+
         let tooltip = match (bucket, self.pipeline.as_ref()) {
-            (LevelBucket::Idle, _) => "wasamix — idle (click to start)".to_string(),
+            (LevelBucket::Idle, _) if self.vbcable_id.is_none() => {
+                "wasamix — VB-Audio Cable not installed".to_string()
+            }
+            (LevelBucket::Idle, _) => {
+                format!("wasamix — idle (click to start{})", dest_hint)
+            }
             (_, Some(pipeline)) if self.config.show_level_meter => {
                 let db = peak_to_dbfs(pipeline.peak_level());
                 if db.is_finite() {
-                    format!("wasamix — MIXING ({:.0} dBFS)", db)
+                    format!("wasamix{} — MIXING ({:.0} dBFS)", dest_hint, db)
                 } else {
-                    "wasamix — MIXING (silent)".to_string()
+                    format!("wasamix{} — MIXING (silent)", dest_hint)
                 }
             }
-            _ => "wasamix — MIXING".to_string(),
+            _ => format!("wasamix{} — MIXING", dest_hint),
         };
         let _ = tray.set_tooltip(Some(&tooltip));
     }
@@ -628,30 +599,6 @@ impl TrayApp {
         self.system_source_group.set_checked_by_value(device_id);
     }
 
-    fn select_output(&mut self, device_id: &str) {
-        // Feedback-loop guard at selection time: if the user is about to
-        // pick an output that matches the current system source, warn and
-        // refuse. We re-check at start_mixing() in case either changes
-        // afterward, but catching it here gives better feedback.
-        if self.effective_system_source_id().as_deref() == Some(device_id) {
-            warn!(
-                "Refusing to pick output '{}': it matches the current system-audio source, \
-                 which would cause feedback. Change the system source first.",
-                device_id
-            );
-            // Revert the check state so the menu reflects the refusal.
-            self.output_group
-                .set_checked_by_value(self.selected_output_id.as_deref());
-            return;
-        }
-
-        info!("Output selected: {}", device_id);
-        self.selected_output_id = Some(device_id.to_string());
-        self.config.output_device_id = Some(device_id.to_string());
-        self.persist_config();
-        self.output_group.set_checked_by_value(Some(device_id));
-    }
-
     fn persist_config(&self) {
         if let Err(e) = self.config.save() {
             error!("Failed to save config: {:?}", e);
@@ -676,11 +623,6 @@ impl TrayApp {
 
         if let Some(value) = self.system_source_group.resolve(&event.id) {
             self.select_system_source(value.as_deref());
-            return;
-        }
-
-        if let Some(Some(dev_id)) = self.output_group.resolve(&event.id) {
-            self.select_output(&dev_id);
         }
     }
 
@@ -732,11 +674,19 @@ impl TrayApp {
         let menu = self.build_menu().context("Failed to build context menu")?;
         self.menu = Some(menu.clone());
 
-        // Create the tray icon
+        // Create the tray icon. The first-tick update_icon() will replace
+        // this tooltip with the destination-aware one a moment later.
+        let initial_tooltip = match self.vbcable_name.as_deref() {
+            Some(name) => format!(
+                "wasamix — idle (click to start → {})",
+                shorten_cable_name(name)
+            ),
+            None => "wasamix — VB-Audio Cable not installed".to_string(),
+        };
         let icon = Self::icon_for(LevelBucket::Idle);
         let tray_icon = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
-            .with_tooltip("wasamix — idle (click to start)")
+            .with_tooltip(&initial_tooltip)
             .with_icon(icon)
             .with_menu_on_left_click(false) // we handle left-click ourselves
             .build()

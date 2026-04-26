@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-04-26
+
+### Changed
+
+- **Simpler menu: two selectors, not three.** Dropped the
+  "Output destination" section. wasamix always writes to VB-Cable; the
+  menu now shows only **Input microphone** and **Output sound
+  (what you hear)**.
+- **Smarter VB-Cable detection.** `find_vbcable` prefers the plain
+  `CABLE Input` endpoint over the 16-channel Voicemeeter variant
+  (`CABLE In 16ch`). Handles extra standalone cables (`CABLE-B Input`,
+  etc.) as tier-2 fallbacks.
+- **Output-sound selector no longer lists VB-Cable.** Users can only
+  pick speakers / headphones they actually listen through, not
+  virtual cables — those are the *destination*, not a source.
+- Tooltip shows the resolved destination: `wasamix → CABLE Input — MIXING (-12 dBFS)`.
+- Refuses to start when VB-Cable isn't installed; tooltip says
+  `wasamix — VB-Audio Cable not installed`.
+
+### Removed
+
+- The "📤 Output destination" menu section and its selector state
+  (`selected_output_id`, `output_group`).
+- The feedback-loop guard is no longer needed in the UI — the
+  source selector can no longer pick a VB-Cable endpoint, so
+  source==destination is structurally impossible.
+
+### Kept (for power users)
+
+- `Config.output_device_id` still exists as an unadvertised escape
+  hatch: set it in `config.json` to pin a non-default destination
+  (e.g. `CABLE-B Input`). README documents this.
+
 ## [0.2.0] - 2026-04-26
 
 ### Added
@@ -56,6 +89,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AUTOCONVERTPCM`-based format normalization so Bluetooth mics (16 kHz native) and stereo f32 loopback streams all flow through the same mono-i16-@-48kHz pipeline.
 - Diagnostic binaries `test_capture` and `test_pipeline`.
 
-[Unreleased]: https://github.com/ytchenak/wasamix/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/ytchenak/wasamix/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/ytchenak/wasamix/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ytchenak/wasamix/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ytchenak/wasamix/releases/tag/v0.1.0
