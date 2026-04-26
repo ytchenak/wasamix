@@ -9,6 +9,10 @@ A tiny Windows system-tray app that mixes your **microphone** with your **system
 
 No window, no UI chrome. Just a tray icon: left-click to start, left-click to stop.
 
+![wasamix demo](assets/wasamix-demo.gif)
+
+> Right-click the tray icon to pick your system-audio source, then left-click to start mixing into VB-Cable. The icon turns green while running.
+
 ---
 
 ## Features
