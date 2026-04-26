@@ -48,7 +48,20 @@ impl Pipeline {
     /// ----------------------------
     /// `bail!("message")` is shorthand for `return Err(anyhow!("message"))`.
     /// It's from the `anyhow` crate — a convenient way to return errors.
-    pub fn start(mic_device_id: &str, vbcable_device_id: &str) -> Result<Self> {
+    /// Start the audio pipeline.
+    ///
+    /// - `mic_device_id`: the capture device to record the user's voice from.
+    /// - `system_source_device_id`: which render device to loopback-capture.
+    ///   Pass `None` to use the Windows default (with fallback to other
+    ///   render devices if the default refuses loopback init — common with
+    ///   Bluetooth headsets in exclusive mode).
+    /// - `output_device_id`: where to write the mixed audio. Typically the
+    ///   VB-Cable render endpoint; callers resolve the concrete ID upstream.
+    pub fn start(
+        mic_device_id: &str,
+        system_source_device_id: Option<&str>,
+        output_device_id: &str,
+    ) -> Result<Self> {
         let stop_flag = Arc::new(AtomicBool::new(false));
         let peak_level = Arc::new(AtomicU32::new(0));
 
@@ -65,10 +78,10 @@ impl Pipeline {
         )?;
 
         // Start loopback capture thread.
-        // The device_id is unused for loopback — the thread selects the best
-        // available render device internally (with fallback if default fails).
+        // Empty string = "Windows default with fallback"; non-empty =
+        // pinned render device (no fallback).
         let loopback_thread = start_capture_thread(
-            String::new(),
+            system_source_device_id.unwrap_or("").to_string(),
             Arc::clone(&loopback_buffer),
             Arc::clone(&stop_flag),
             true,
@@ -90,16 +103,16 @@ impl Pipeline {
                 mixed
             }));
 
-        // Start render thread — writes mixed audio to VB-Cable
+        // Start render thread — writes mixed audio to the configured output.
         let render_thread = start_render_thread(
-            vbcable_device_id.to_string(),
+            output_device_id.to_string(),
             mixer_fn,
             Arc::clone(&stop_flag),
         )?;
 
         info!(
-            "Pipeline started: mic={} vbcable={}",
-            mic_device_id, vbcable_device_id
+            "Pipeline started: mic={} system_source={:?} output={}",
+            mic_device_id, system_source_device_id, output_device_id
         );
 
         Ok(Pipeline {

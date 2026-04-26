@@ -7,18 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-26
+
+### Added
+
+- Three-section tray menu — explicit selectors for **input microphone**,
+  **system audio source**, and **output destination**. The system-source
+  selector includes a `(Windows default)` row that auto-tracks whatever
+  Windows is routing now.
+- Feedback-loop guard: refuses to use the same device for system source and
+  output (both at selection time and at pipeline start), so you can't
+  accidentally route the mix back into itself.
+- Color-coded tray level meter (grey / dim green / green / amber / red)
+  with a live dBFS tooltip. Disable by setting
+  `"show_level_meter": false` in `config.json`.
+- `peak_i16` helper + `Pipeline::peak_level()` atomic exposure for
+  lock-free level polling from the UI thread.
+
 ### Changed
 
+- `Config` gained `system_source_device_id` and `output_device_id`. Legacy
+  `config.json` files from 0.1.0 keep loading (new fields `#[serde(default)]`
+  to `None`, meter defaults to on).
+- `Pipeline::start(mic, system_source: Option<&str>, output)` — the old
+  two-argument signature (mic + vbcable) is gone.
+- Event loop switched from `Poll` to `WaitUntil(166 ms)`; the tray thread
+  now actually sleeps between ticks, much lower idle CPU.
+- Icon repaints only on bucket transitions to avoid Explorer rate-limit /
+  flicker.
 - Bumped `muda` 0.16 → 0.17, `tray-icon` 0.19 → 0.22, `windows` 0.61 → 0.62.
-- Removed unused `rubato` dependency (WASAPI's `AUTOCONVERTPCM` covers all
-  resampling needs).
+- Removed unused `rubato` dependency.
 - CI: upgraded to `actions/checkout@v6`, `actions/upload-artifact@v7`,
   `actions/download-artifact@v8`, `softprops/action-gh-release@v3`.
 
 ### Known issues
 
-- Tracked in [#10](https://github.com/ytchenak/wasamix/issues/10): migrating to
-  `wasapi` 0.23 needs a code-level API update; staying on 0.16 for 0.1.0.
+- Tracked in [#10](https://github.com/ytchenak/wasamix/issues/10): migrating
+  to `wasapi` 0.23 needs a code-level API update; staying on 0.16 for now.
 
 ## [0.1.0] - 2026-04-26
 
@@ -31,5 +56,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AUTOCONVERTPCM`-based format normalization so Bluetooth mics (16 kHz native) and stereo f32 loopback streams all flow through the same mono-i16-@-48kHz pipeline.
 - Diagnostic binaries `test_capture` and `test_pipeline`.
 
-[Unreleased]: https://github.com/ytchenak/wasamix/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/ytchenak/wasamix/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/ytchenak/wasamix/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ytchenak/wasamix/releases/tag/v0.1.0

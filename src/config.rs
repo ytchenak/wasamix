@@ -21,9 +21,21 @@ use std::path::{Path, PathBuf};
 /// In Python this would be a dict — in Rust it's a typed struct.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
-    /// `Option<String>` means this field can be `Some("device-id")` or `None`.
-    /// We store the device ID as a string because WASAPI device IDs are strings.
+    /// Selected microphone (capture device). `None` means "use first available".
     pub mic_device_id: Option<String>,
+
+    /// Render device whose playback we capture via WASAPI loopback. `None`
+    /// means "Windows default". `#[serde(default)]` keeps legacy configs
+    /// (from wasamix ≤ 0.1.0, which didn't have this field) loadable.
+    #[serde(default)]
+    pub system_source_device_id: Option<String>,
+
+    /// Destination render device — where the mixed audio is written. `None`
+    /// means "auto-detect VB-Cable". Users who want to target a different
+    /// virtual cable (OBS Virtual Audio, CABLE-B, a real device for
+    /// debugging) can pin a specific ID here.
+    #[serde(default)]
+    pub output_device_id: Option<String>,
 
     /// Whether the tray icon color-codes the current output level.
     /// `#[serde(default = "...")]` lets older config.json files (missing this
@@ -86,6 +98,8 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             mic_device_id: None,
+            system_source_device_id: None,
+            output_device_id: None,
             show_level_meter: default_show_level_meter(),
         }
     }
@@ -111,24 +125,30 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("config.json");
         let config = Config {
-            mic_device_id: Some("test-device-123".to_string()),
+            mic_device_id: Some("mic-123".to_string()),
+            system_source_device_id: Some("src-456".to_string()),
+            output_device_id: Some("out-789".to_string()),
             show_level_meter: false,
         };
         config.save_to(&path).unwrap();
         let loaded = Config::load_from(&path).unwrap();
-        assert_eq!(loaded.mic_device_id, Some("test-device-123".to_string()));
+        assert_eq!(loaded.mic_device_id.as_deref(), Some("mic-123"));
+        assert_eq!(loaded.system_source_device_id.as_deref(), Some("src-456"));
+        assert_eq!(loaded.output_device_id.as_deref(), Some("out-789"));
         assert!(!loaded.show_level_meter);
     }
 
     #[test]
-    fn test_load_legacy_without_level_meter_field() {
-        // A config.json written by wasamix 0.1.0 won't have show_level_meter.
-        // It should still load, defaulting show_level_meter to true.
+    fn test_load_legacy_without_new_fields() {
+        // A config.json from wasamix 0.1.0 has only `mic_device_id`.
+        // It must still load — new fields default to None / true.
         let dir = tempdir().unwrap();
         let path = dir.path().join("config.json");
         fs::write(&path, r#"{"mic_device_id":"abc"}"#).unwrap();
         let loaded = Config::load_from(&path).unwrap();
-        assert_eq!(loaded.mic_device_id, Some("abc".to_string()));
+        assert_eq!(loaded.mic_device_id.as_deref(), Some("abc"));
+        assert_eq!(loaded.system_source_device_id, None);
+        assert_eq!(loaded.output_device_id, None);
         assert!(loaded.show_level_meter);
     }
 

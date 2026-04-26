@@ -105,54 +105,100 @@ fn peak_to_dbfs(peak: u16) -> f32 {
     20.0 * (peak as f32 / 32768.0).log10()
 }
 
+/// Append a disabled header row. On most Windows themes this renders in
+/// grey, reading as a section label rather than a clickable command.
+fn append_header(menu: &Menu, text: &str) -> Result<()> {
+    let item = MenuItem::new(text, false, None);
+    menu.append(&item).context("Failed to append menu header")
+}
+
+/// A radio-group selector rendered as a sequence of `CheckMenuItem`s plus
+/// menu-id ↔ value maps. `None` as the value means "(auto) — whatever the
+/// default resolves to right now" (only used by the system-source group).
+struct MenuGroup {
+    items: Vec<CheckMenuItem>,
+    // (MenuId, Some(device_id)) or (MenuId, None) for the "Windows default" row
+    id_map: Vec<(MenuId, Option<String>)>,
+}
+
+impl MenuGroup {
+    fn new() -> Self {
+        Self {
+            items: Vec::new(),
+            id_map: Vec::new(),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.items.clear();
+        self.id_map.clear();
+    }
+
+    /// If `menu_id` belongs to this group, return the associated device-id
+    /// selection. `Ok(Some(Some(id)))` is a concrete device; `Ok(Some(None))`
+    /// is the "Windows default" row; `Ok(None)` means "not ours".
+    fn resolve(&self, menu_id: &MenuId) -> Option<Option<String>> {
+        self.id_map
+            .iter()
+            .find(|(m, _)| m == menu_id)
+            .map(|(_, v)| v.clone())
+    }
+
+    fn set_checked_by_value(&self, target: Option<&str>) {
+        for ((_, value), item) in self.id_map.iter().zip(self.items.iter()) {
+            let checked = match (value, target) {
+                (None, None) => true,
+                (Some(v), Some(t)) => v == t,
+                _ => false,
+            };
+            item.set_checked(checked);
+        }
+    }
+}
+
 /// System tray application — owns the tray icon, context menu, audio pipeline,
 /// and configuration state.
-///
-/// RUST CONCEPT: Struct composition (vs. inheritance)
-/// ---------------------------------------------------
-/// Rust doesn't have class inheritance. Instead, you compose structs — the
-/// `TrayApp` *contains* a `Pipeline`, a `Config`, a `TrayIcon`, etc. Behavior
-/// is defined through trait implementations (like `ApplicationHandler`) rather
-/// than by inheriting from a base class.
 pub struct TrayApp {
     /// The tray icon handle — `Option` because we create it after the event
     /// loop starts (in `resumed()`).
     tray_icon: Option<TrayIcon>,
 
     /// The running audio pipeline — `None` when idle, `Some(pipeline)` when mixing.
-    ///
-    /// RUST CONCEPT: `Option<T>` for state machines
-    /// Option naturally models "present or absent" states. When `pipeline` is
-    /// `Some`, mixing is active. When `None`, we're idle. The compiler ensures
-    /// we handle both cases.
     pipeline: Option<Pipeline>,
 
-    /// Persisted user config (selected mic device ID).
+    /// Persisted user config.
     config: Config,
 
     /// All available input (microphone) devices.
     input_devices: Vec<DeviceInfo>,
 
-    /// Device ID of the VB-Cable render endpoint (where we write mixed audio).
-    vbcable_id: Option<String>,
+    /// All available render (output) devices — used for both the "system
+    /// audio source" selector (via loopback capture) and the "output
+    /// destination" selector.
+    render_devices: Vec<DeviceInfo>,
+
+    /// ID of the Windows-default render device at startup — used to tag the
+    /// corresponding row in the system-source selector.
+    default_render_id: Option<String>,
 
     /// Currently selected microphone device ID.
     selected_mic_id: Option<String>,
 
+    /// Currently selected system-audio source: `None` = "Windows default",
+    /// `Some(id)` = pinned render device.
+    selected_system_source_id: Option<String>,
+
+    /// Currently selected output (destination) device ID. Always concrete —
+    /// we resolve "(auto) VB-Cable" up-front in `new()`.
+    selected_output_id: Option<String>,
+
     /// The context menu shown on right-click.
     menu: Option<Menu>,
 
-    /// Maps each menu item's MenuId to its audio device ID string.
-    /// This lets us look up which device the user selected when a menu event fires.
-    ///
-    /// RUST CONCEPT: Vec<(A, B)> as a simple association list
-    /// For small collections, a Vec of tuples is often simpler and faster than
-    /// a HashMap. We iterate linearly to find a match — O(n) but n is tiny
-    /// (number of microphones on the system, typically 1-5).
-    mic_menu_ids: Vec<(MenuId, String)>,
-
-    /// Stores the CheckMenuItem handles so we can update their checked/enabled state.
-    mic_menu_items: Vec<CheckMenuItem>,
+    /// Radio-group state for each of the three selectors.
+    mic_group: MenuGroup,
+    system_source_group: MenuGroup,
+    output_group: MenuGroup,
 
     /// The "Quit" menu item — stored so we can identify its ID in event handling.
     quit_item_id: Option<MenuId>,
@@ -176,129 +222,194 @@ impl TrayApp {
     pub fn new() -> Result<Self> {
         // Load saved config (or defaults if no config file exists)
         let config = Config::load();
-        info!("Config loaded: mic_device_id={:?}", config.mic_device_id);
+        info!(
+            "Config loaded: mic={:?} system_source={:?} output={:?}",
+            config.mic_device_id, config.system_source_device_id, config.output_device_id
+        );
 
         // Enumerate all audio devices on the system
         let all_devices =
             devices::enumerate_devices().context("Failed to enumerate audio devices")?;
 
-        // Find the VB-Cable render endpoint
-        let vbcable_id = devices::find_vbcable(&all_devices).map(|d| d.id.clone());
-        if vbcable_id.is_none() {
-            warn!("VB-Cable not found — mixing will not be available");
-        }
-
-        // Filter to just microphone (capture) devices, excluding VB-Cable endpoints
         let input_devices = devices::filter_input_devices(&all_devices);
+        let render_devices = devices::filter_render_devices(&all_devices);
+        let default_render_id = devices::get_default_render_device_id_opt();
+        let vbcable_id = devices::find_vbcable(&all_devices).map(|d| d.id.clone());
+
         info!("Found {} input device(s)", input_devices.len());
         for d in &input_devices {
             info!("  - {} ({})", d.name, d.id);
         }
+        info!("Found {} render device(s)", render_devices.len());
+        for d in &render_devices {
+            info!("  - {} ({})", d.name, d.id);
+        }
+        if vbcable_id.is_none() {
+            warn!("VB-Cable not auto-detected — user must pick an output manually");
+        }
 
-        // Determine which mic to select: saved config > first available > none
-        //
-        // RUST CONCEPT: `Option` chaining with `.or_else()`
-        // `.or_else(|| ...)` provides a fallback: if the first Option is None,
-        // evaluate the closure to get another Option. This chains gracefully
-        // without nested if/else.
+        // Mic: saved config > first available > none.
         let selected_mic_id = config
             .mic_device_id
             .clone()
-            .filter(|saved_id| input_devices.iter().any(|d| &d.id == saved_id))
+            .filter(|saved| input_devices.iter().any(|d| &d.id == saved))
             .or_else(|| input_devices.first().map(|d| d.id.clone()));
 
-        info!("Selected mic: {:?}", selected_mic_id);
+        // System source: saved config if still present on the system, else
+        // None (which means "Windows default, with fallback").
+        let selected_system_source_id = config
+            .system_source_device_id
+            .clone()
+            .filter(|saved| render_devices.iter().any(|d| &d.id == saved));
+
+        // Output: saved config if still present, else VB-Cable if found,
+        // else first render device (so *something* is selected). User can
+        // override at any time from the menu.
+        let selected_output_id = config
+            .output_device_id
+            .clone()
+            .filter(|saved| render_devices.iter().any(|d| &d.id == saved))
+            .or(vbcable_id)
+            .or_else(|| render_devices.first().map(|d| d.id.clone()));
+
+        info!(
+            "Initial selection: mic={:?} system_source={:?} output={:?}",
+            selected_mic_id, selected_system_source_id, selected_output_id
+        );
 
         Ok(TrayApp {
             tray_icon: None,
             pipeline: None,
             config,
             input_devices,
-            vbcable_id,
+            render_devices,
+            default_render_id,
             selected_mic_id,
+            selected_system_source_id,
+            selected_output_id,
             menu: None,
-            mic_menu_ids: Vec::new(),
-            mic_menu_items: Vec::new(),
+            mic_group: MenuGroup::new(),
+            system_source_group: MenuGroup::new(),
+            output_group: MenuGroup::new(),
             quit_item_id: None,
             current_bucket: LevelBucket::Idle,
             next_tick: Instant::now(),
         })
     }
 
+    /// Resolve `selected_system_source_id` to a concrete device ID for the
+    /// feedback-loop guard. `None` means "Windows default" → use the
+    /// detected default_render_id (which may itself be `None` if we failed
+    /// to query). Returns the ID, or `None` if we genuinely don't know.
+    fn effective_system_source_id(&self) -> Option<String> {
+        self.selected_system_source_id
+            .clone()
+            .or_else(|| self.default_render_id.clone())
+    }
+
     /// Build (or rebuild) the right-click context menu.
     ///
-    /// Layout:
-    ///   🎙  Input microphone:              (disabled header)
-    ///     • Microphone (HD Pro Webcam C920)   (CheckMenuItem — radio)
-    ///     • Headset (Jabra Evolve2 65)        (CheckMenuItem — radio)
-    ///   ──────────────────
-    ///   🔊 System sound: Speakers (...)    (disabled — Windows-default hint)
-    ///   ──────────────────
-    ///   Quit
+    /// Three selector sections (mic / system source / output) plus Quit.
+    /// Each selector is a radio-style `CheckMenuItem` list under a disabled
+    /// header. All selectors are disabled while mixing so the user can't
+    /// rewire audio mid-stream; stop, switch, start.
     fn build_menu(&mut self) -> Result<Menu> {
         let menu = Menu::new();
         let is_mixing = self.pipeline.is_some();
 
-        // Clear old mappings
-        self.mic_menu_ids.clear();
-        self.mic_menu_items.clear();
+        self.mic_group.clear();
+        self.system_source_group.clear();
+        self.output_group.clear();
 
-        // Section header — disabled MenuItem, acts as a label.
-        // Note: many Windows theme engines render disabled items in grey,
-        // which is what we want — it reads as a heading, not a clickable row.
-        let mic_header = MenuItem::new("\u{1F399}  Input microphone:", false, None);
-        menu.append(&mic_header)
-            .context("Failed to append mic header")?;
-
-        // Add a CheckMenuItem for each microphone
+        // --- Section 1: input microphone -----------------------------------
+        append_header(&menu, "\u{1F399}  Input microphone:")?;
         for device in &self.input_devices {
             let is_selected = self.selected_mic_id.as_deref() == Some(&device.id);
-
-            // CheckMenuItem::new(text, enabled, checked, accelerator)
-            // - enabled: disabled while mixing (to prevent surprise device switches)
-            // - checked: true for the currently selected mic
-            let item = CheckMenuItem::new(
-                &device.name,
-                !is_mixing, // disabled while mixing — UX requirement
-                is_selected,
-                None, // no keyboard accelerator
-            );
-
-            // Store the mapping: MenuId -> device ID
-            self.mic_menu_ids
-                .push((item.id().clone(), device.id.clone()));
-            self.mic_menu_items.push(item.clone());
-
-            menu.append(&item)
-                .context("Failed to append mic menu item")?;
+            let item = CheckMenuItem::new(&device.name, !is_mixing, is_selected, None);
+            self.mic_group
+                .id_map
+                .push((item.id().clone(), Some(device.id.clone())));
+            self.mic_group.items.push(item.clone());
+            menu.append(&item).context("Failed to append mic item")?;
         }
-
         if self.input_devices.is_empty() {
-            // Show a disabled placeholder if no mics found
-            let no_mics = MenuItem::new("(no microphones found)", false, None);
-            menu.append(&no_mics)
-                .context("Failed to append placeholder item")?;
+            menu.append(&MenuItem::new("(no microphones found)", false, None))
+                .context("Failed to append mic placeholder")?;
         }
 
-        // Separator between the mic list and the system-sound info row.
+        // --- Section 2: system-audio source --------------------------------
+        // This is what gets loopback-captured. Users who flip Windows output
+        // devices (speakers → headphones) usually want to track that, so we
+        // offer "(Windows default)" as the first, default-checked row.
         menu.append(&PredefinedMenuItem::separator())
             .context("Failed to append separator")?;
+        append_header(&menu, "\u{1F50A} System audio source:")?;
 
-        // Informational row: which render device we're capturing system audio
-        // from. It's disabled because the user can't change it here — they
-        // change it from the Windows volume-mixer tray popup.
-        let sys_name =
-            devices::get_default_render_device_name().unwrap_or_else(|| "(unknown)".to_string());
-        let sys_label = format!("\u{1F50A} System sound: {} (Windows default)", sys_name);
-        let sys_item = MenuItem::new(&sys_label, false, None);
-        menu.append(&sys_item)
-            .context("Failed to append system-sound row")?;
+        let default_row_label = match self.default_render_id.as_ref() {
+            Some(id) => match self.render_devices.iter().find(|d| &d.id == id) {
+                Some(d) => format!("(Windows default — {})", d.name),
+                None => "(Windows default)".to_string(),
+            },
+            None => "(Windows default)".to_string(),
+        };
+        let default_row = CheckMenuItem::new(
+            &default_row_label,
+            !is_mixing,
+            self.selected_system_source_id.is_none(),
+            None,
+        );
+        self.system_source_group
+            .id_map
+            .push((default_row.id().clone(), None));
+        self.system_source_group.items.push(default_row.clone());
+        menu.append(&default_row)
+            .context("Failed to append default-render row")?;
 
-        // Separator before Quit.
+        for device in &self.render_devices {
+            let is_selected = self.selected_system_source_id.as_deref() == Some(&device.id);
+            let item = CheckMenuItem::new(&device.name, !is_mixing, is_selected, None);
+            self.system_source_group
+                .id_map
+                .push((item.id().clone(), Some(device.id.clone())));
+            self.system_source_group.items.push(item.clone());
+            menu.append(&item)
+                .context("Failed to append system-source item")?;
+        }
+        if self.render_devices.is_empty() {
+            menu.append(&MenuItem::new("(no render devices found)", false, None))
+                .context("Failed to append system-source placeholder")?;
+        }
+
+        // --- Section 3: output destination ---------------------------------
+        // Usually VB-Cable — but a user may want to target OBS Virtual Audio,
+        // CABLE-B, or a real speaker for debugging. So it's a full selector.
+        menu.append(&PredefinedMenuItem::separator())
+            .context("Failed to append separator")?;
+        append_header(&menu, "\u{1F4E4} Output destination:")?;
+
+        for device in &self.render_devices {
+            let is_selected = self.selected_output_id.as_deref() == Some(&device.id);
+            // Tag VB-Cable so users know which one Otter/etc. listens to.
+            let label = if device.name.to_lowercase().contains("cable input") {
+                format!("{}  ← recording target", device.name)
+            } else {
+                device.name.clone()
+            };
+            let item = CheckMenuItem::new(&label, !is_mixing, is_selected, None);
+            self.output_group
+                .id_map
+                .push((item.id().clone(), Some(device.id.clone())));
+            self.output_group.items.push(item.clone());
+            menu.append(&item).context("Failed to append output item")?;
+        }
+        if self.render_devices.is_empty() {
+            menu.append(&MenuItem::new("(no render devices found)", false, None))
+                .context("Failed to append output placeholder")?;
+        }
+
+        // --- Quit ----------------------------------------------------------
         menu.append(&PredefinedMenuItem::separator())
             .context("Failed to append separator before Quit")?;
-
-        // Quit item
         let quit_item = MenuItem::new("Quit", true, None);
         self.quit_item_id = Some(quit_item.id().clone());
         menu.append(&quit_item)
@@ -362,27 +473,48 @@ impl TrayApp {
         }
     }
 
-    /// Start the audio pipeline — mic capture + loopback + mixing -> VB-Cable.
+    /// Start the audio pipeline — mic + system loopback → output device.
+    ///
+    /// Runs the feedback-loop guard first: if the user has set
+    /// system-audio-source == output-destination, mixing would create an
+    /// infinite howl. We refuse and log rather than routing it anyway.
     fn start_mixing(&mut self) {
-        let mic_id = match &self.selected_mic_id {
-            Some(id) => id.clone(),
-            None => {
-                warn!("Cannot start mixing: no microphone selected");
-                return;
-            }
+        let Some(mic_id) = self.selected_mic_id.clone() else {
+            warn!("Cannot start mixing: no microphone selected");
+            return;
         };
 
-        let vbcable_id = match &self.vbcable_id {
-            Some(id) => id.clone(),
-            None => {
-                warn!("Cannot start mixing: VB-Cable not found");
-                return;
-            }
+        let Some(output_id) = self.selected_output_id.clone() else {
+            warn!("Cannot start mixing: no output destination selected");
+            return;
         };
 
-        info!("Starting pipeline: mic={}, vbcable={}", mic_id, vbcable_id);
+        // Feedback-loop guard. We compare the *effective* system-source ID
+        // (which for `None` means "Windows default → default_render_id") to
+        // the output. If they collide, starting would route our own output
+        // back into the mix and cause runaway feedback.
+        if let Some(sys_id) = self.effective_system_source_id()
+            && sys_id == output_id
+        {
+            error!(
+                "Refusing to start: system-audio source and output destination are the same \
+                 device ({}). This would cause feedback. Pick a different output (usually a \
+                 VB-Cable endpoint).",
+                sys_id
+            );
+            return;
+        }
 
-        match Pipeline::start(&mic_id, &vbcable_id) {
+        info!(
+            "Starting pipeline: mic={} system_source={:?} output={}",
+            mic_id, self.selected_system_source_id, output_id
+        );
+
+        match Pipeline::start(
+            &mic_id,
+            self.selected_system_source_id.as_deref(),
+            &output_id,
+        ) {
             Ok(pipeline) => {
                 self.pipeline = Some(pipeline);
                 // Force the next update_icon() tick to repaint: we're
@@ -478,64 +610,77 @@ impl TrayApp {
         }
     }
 
-    /// Handle microphone selection from the context menu.
-    ///
-    /// UX REQUIREMENT: Selecting a mic does NOT auto-start mixing.
-    /// It only updates the saved config. The user must left-click to start mixing.
+    /// Selecting any option does NOT auto-start mixing — the user must
+    /// left-click the icon to begin. This keeps intent explicit.
     fn select_mic(&mut self, device_id: &str) {
         info!("Mic selected: {}", device_id);
-
         self.selected_mic_id = Some(device_id.to_string());
-
-        // Persist the selection to disk
         self.config.mic_device_id = Some(device_id.to_string());
+        self.persist_config();
+        self.mic_group.set_checked_by_value(Some(device_id));
+    }
+
+    fn select_system_source(&mut self, device_id: Option<&str>) {
+        info!("System source selected: {:?}", device_id);
+        self.selected_system_source_id = device_id.map(|s| s.to_string());
+        self.config.system_source_device_id = self.selected_system_source_id.clone();
+        self.persist_config();
+        self.system_source_group.set_checked_by_value(device_id);
+    }
+
+    fn select_output(&mut self, device_id: &str) {
+        // Feedback-loop guard at selection time: if the user is about to
+        // pick an output that matches the current system source, warn and
+        // refuse. We re-check at start_mixing() in case either changes
+        // afterward, but catching it here gives better feedback.
+        if self.effective_system_source_id().as_deref() == Some(device_id) {
+            warn!(
+                "Refusing to pick output '{}': it matches the current system-audio source, \
+                 which would cause feedback. Change the system source first.",
+                device_id
+            );
+            // Revert the check state so the menu reflects the refusal.
+            self.output_group
+                .set_checked_by_value(self.selected_output_id.as_deref());
+            return;
+        }
+
+        info!("Output selected: {}", device_id);
+        self.selected_output_id = Some(device_id.to_string());
+        self.config.output_device_id = Some(device_id.to_string());
+        self.persist_config();
+        self.output_group.set_checked_by_value(Some(device_id));
+    }
+
+    fn persist_config(&self) {
         if let Err(e) = self.config.save() {
             error!("Failed to save config: {:?}", e);
         }
-
-        // Update the check marks on the menu items — uncheck all, then check
-        // the selected one. This gives "radio button" behavior.
-        for (menu_id, dev_id) in &self.mic_menu_ids {
-            let is_selected = dev_id == device_id;
-            // Find the corresponding CheckMenuItem and update it
-            if let Some(item) = self.mic_menu_items.iter().find(|i| i.id() == menu_id) {
-                item.set_checked(is_selected);
-            }
-        }
     }
 
-    /// Handle a menu event (Quit or mic selection).
-    ///
-    /// RUST CONCEPT: Pattern matching on `MenuId`
-    /// We compare the event's `id` against known IDs to determine which
-    /// menu item was clicked. This is similar to a command dispatch pattern.
+    /// Route menu events to the right selector group (or Quit).
     fn handle_menu_event(&mut self, event: MenuEvent) {
-        // Check if this is the Quit item
         if let Some(quit_id) = &self.quit_item_id
             && event.id == *quit_id
         {
             info!("Quit selected — shutting down");
-            // Stop mixing before exiting (cleanup happens via Drop)
             self.stop_mixing();
-            // The event loop will be exited in about_to_wait
-            // We signal by dropping the tray icon
             self.tray_icon = None;
             return;
         }
 
-        // Check if this is a mic selection item
-        //
-        // RUST CONCEPT: `.find()` returns `Option<&T>`
-        // We search our ID->device mapping to find which mic was clicked.
-        // `.cloned()` converts `Option<&String>` to `Option<String>`.
-        let device_id = self
-            .mic_menu_ids
-            .iter()
-            .find(|(menu_id, _)| *menu_id == event.id)
-            .map(|(_, dev_id)| dev_id.clone());
+        if let Some(Some(dev_id)) = self.mic_group.resolve(&event.id) {
+            self.select_mic(&dev_id);
+            return;
+        }
 
-        if let Some(device_id) = device_id {
-            self.select_mic(&device_id);
+        if let Some(value) = self.system_source_group.resolve(&event.id) {
+            self.select_system_source(value.as_deref());
+            return;
+        }
+
+        if let Some(Some(dev_id)) = self.output_group.resolve(&event.id) {
+            self.select_output(&dev_id);
         }
     }
 

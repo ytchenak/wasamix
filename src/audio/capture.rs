@@ -56,9 +56,31 @@ fn try_loopback_init(device: &wasapi::Device) -> Result<wasapi::AudioClient> {
 }
 
 /// Get a render device suitable for loopback capture.
-/// Tries the default render device first. If it fails (common with Bluetooth
-/// devices in certain states), falls back to other render devices.
-fn get_loopback_device() -> Result<(wasapi::Device, wasapi::AudioClient)> {
+///
+/// If `requested_id` is non-empty, that exact device is used (no fallback) —
+/// the user explicitly pinned a system-sound source and we respect that.
+///
+/// If empty, try the Windows-default render device first, then fall back
+/// through all other render devices (excluding any VB-Cable) — this covers
+/// the Bluetooth-in-exclusive-mode case where the default device refuses
+/// loopback init.
+fn get_loopback_device(requested_id: &str) -> Result<(wasapi::Device, wasapi::AudioClient)> {
+    if !requested_id.is_empty() {
+        let dev = find_device_by_id(requested_id, &Direction::Render)
+            .map_err(|e| anyhow::anyhow!("Loopback source '{}' not found: {}", requested_id, e))?;
+        let name = dev.get_friendlyname().unwrap_or_default();
+        let ac = try_loopback_init(&dev).map_err(|e| {
+            anyhow::anyhow!(
+                "Loopback source '{}' failed to initialize: {}. The device may be in exclusive \
+                 mode or have a driver issue.",
+                name,
+                e
+            )
+        })?;
+        info!("Loopback: using pinned render device: {}", name);
+        return Ok((dev, ac));
+    }
+
     let default_dev = wasapi::get_default_device(&Direction::Render)
         .map_err(|e| anyhow::anyhow!("Failed to get default render device: {}", e))?;
     let default_name = default_dev.get_friendlyname().unwrap_or_default();
@@ -240,7 +262,9 @@ fn capture_loop(
     //
     // For mic: we find the specific capture device by ID and initialize normally.
     let (device, audio_client) = if is_loopback {
-        get_loopback_device()?
+        // For loopback, `device_id` carries the user-pinned render device ID
+        // when non-empty, or "" meaning "Windows default with fallback".
+        get_loopback_device(device_id)?
     } else {
         let dev = find_device_by_id(device_id, &Direction::Capture)?;
         let mut ac = dev
