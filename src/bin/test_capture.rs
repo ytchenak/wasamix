@@ -77,7 +77,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // Test B: mix_format, default period, Capture, Shared, no convert
-        println!("\n  --- Test B: mix_format, def_period={}, Capture, Shared, convert=false ---", def_period);
+        println!(
+            "\n  --- Test B: mix_format, def_period={}, Capture, Shared, convert=false ---",
+            def_period
+        );
         let mut ac_b = device.get_iaudioclient()?;
         match ac_b.initialize_client(
             &mix_format,
@@ -105,7 +108,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // Test D: Normal render (NOT loopback) — to check device works at all
-        println!("\n  --- Test D: mix_format, def_period, Render, Shared, convert=true (normal render, no loopback) ---");
+        println!(
+            "\n  --- Test D: mix_format, def_period, Render, Shared, convert=true (normal render, no loopback) ---"
+        );
         let mut ac_d = device.get_iaudioclient()?;
         match ac_d.initialize_client(
             &mix_format,

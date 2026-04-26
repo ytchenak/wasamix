@@ -28,7 +28,7 @@
 use anyhow::{Context, Result};
 use tracing::{error, info, warn};
 
-use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, MenuId, PredefinedMenuItem};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 use winit::application::ApplicationHandler;
@@ -111,8 +111,8 @@ impl TrayApp {
         info!("Config loaded: mic_device_id={:?}", config.mic_device_id);
 
         // Enumerate all audio devices on the system
-        let all_devices = devices::enumerate_devices()
-            .context("Failed to enumerate audio devices")?;
+        let all_devices =
+            devices::enumerate_devices().context("Failed to enumerate audio devices")?;
 
         // Find the VB-Cable render endpoint
         let vbcable_id = devices::find_vbcable(&all_devices).map(|d| d.id.clone());
@@ -183,9 +183,9 @@ impl TrayApp {
             // - checked: true for the currently selected mic
             let item = CheckMenuItem::new(
                 &device.name,
-                !is_mixing,   // disabled while mixing — UX requirement
+                !is_mixing, // disabled while mixing — UX requirement
                 is_selected,
-                None,         // no keyboard accelerator
+                None, // no keyboard accelerator
             );
 
             // Store the mapping: MenuId -> device ID
@@ -233,9 +233,9 @@ impl TrayApp {
     /// the `active` parameter.
     fn create_icon(active: bool) -> Icon {
         let (r, g, b): (u8, u8, u8) = if active {
-            (0, 200, 0)      // green = mixing
+            (0, 200, 0) // green = mixing
         } else {
-            (128, 128, 128)  // grey = idle
+            (128, 128, 128) // grey = idle
         };
 
         // Allocate RGBA buffer: 64 * 64 * 4 bytes
@@ -467,8 +467,7 @@ impl TrayApp {
         // RUST CONCEPT: `EventLoop::new()` returns `Result`
         // Creating an event loop can fail (e.g., if one already exists).
         // We use `?` to propagate the error.
-        let event_loop = EventLoop::new()
-            .context("Failed to create event loop")?;
+        let event_loop = EventLoop::new().context("Failed to create event loop")?;
 
         // Use Poll control flow so `about_to_wait` is called repeatedly.
         // This lets us poll for tray/menu events on each iteration.
@@ -478,9 +477,7 @@ impl TrayApp {
         event_loop.set_control_flow(ControlFlow::Poll);
 
         // Build the context menu
-        let menu = self
-            .build_menu()
-            .context("Failed to build context menu")?;
+        let menu = self.build_menu().context("Failed to build context menu")?;
         self.menu = Some(menu.clone());
 
         // Create the tray icon
@@ -497,9 +494,7 @@ impl TrayApp {
 
         // Enter the event loop — this blocks until exit.
         // `run_app` calls our `ApplicationHandler` methods.
-        event_loop
-            .run_app(&mut self)
-            .context("Event loop error")?;
+        event_loop.run_app(&mut self).context("Event loop error")?;
 
         info!("Tray app exited cleanly");
         Ok(())

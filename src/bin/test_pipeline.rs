@@ -15,8 +15,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let devices = enumerate_devices()?;
 
-    let vbcable = find_vbcable(&devices)
-        .ok_or("VB-Cable not found")?;
+    let vbcable = find_vbcable(&devices).ok_or("VB-Cable not found")?;
     println!("VB-Cable: {} ({})", vbcable.name, vbcable.id);
 
     let inputs = filter_input_devices(&devices);
