@@ -11,7 +11,7 @@ No window, no UI chrome. Just a tray icon: left-click to start, left-click to st
 
 ![wasamix demo](assets/wasamix-demo.gif)
 
-> Right-click the tray icon to pick your system-audio source, then left-click to start mixing into VB-Cable. The icon turns green while running.
+> Right-click the tray icon to pick your mic and what you're listening to, then left-click to start mixing into VB-Cable. The icon lights up with the output level while running.
 
 ---
 
